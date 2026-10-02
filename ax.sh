@@ -258,9 +258,12 @@ update_cores() {
     if curl -fsSL -m 5 "$SCRIPT_URL" -o /tmp/ax_new.sh 2>/dev/null && bash -n /tmp/ax_new.sh 2>/dev/null; then
         local r_ver; r_ver=$(grep -E '^ax_VERSION=' /tmp/ax_new.sh | head -n1 | cut -d'"' -f2)
         if [[ -n "$r_ver" && "$r_ver" != "$ax_VERSION" ]]; then
-            mv -f /tmp/ax_new.sh "$WORK_DIR/ax.sh" && chmod +x "$WORK_DIR/ax.sh"
-            echo -e "${green}✅ 面板脚本已同步升级至 v${r_ver}！${plain}"
-        fi
+          mv -f /tmp/ax_new.sh "$WORK_DIR/ax.sh" && chmod +x "$WORK_DIR/ax.sh"
+          ln -sf "$WORK_DIR/ax.sh" "$SHORTCUT"
+          echo -e "${green}✅ 面板脚本已同步升级至 v${r_ver}！正在重启界面...${plain}"
+          sleep 1
+          exec "$WORK_DIR/ax.sh"
+       fi
     fi
     rm -f /tmp/ax_new.sh
     # 2. 检查并更新 Xray-core 内核
