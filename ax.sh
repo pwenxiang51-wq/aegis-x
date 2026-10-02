@@ -349,7 +349,7 @@ while true; do
         2) setup_argo ;;
         3) print_links; read -rp "👉 按回车返回..." _ ;;
         4) inspect_logs; read -rp "👉 按回车返回..." _ ;;
-        5) update_cores; read -rp "👉 按回车返回..." _ ;;
+        5) update_cores; 
         9) nuke_all ;;
         0) exit 0 ;;
         *) echo -e "${red}❌ 无效指令！请输入 0-5 或 9！${plain}"; sleep 1 ;;
