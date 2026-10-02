@@ -2,7 +2,7 @@
 export LANG=en_US.UTF-8
 set -uo pipefail
 red='\033[0;31m'; green='\033[0;32m'; yellow='\033[0;33m'; cyan='\033[0;36m'; blue='\033[0;94m'; purple='\033[1;35m'; plain='\033[0m'
-ax_VERSION="1.0.6"
+ax_VERSION="1.0.7"
 SCRIPT_URL="https://raw.githubusercontent.com/pwenxiang51-wq/aegis-x/main/ax.sh"
 WORK_DIR="/etc/aegis-x"
 BIN_XRAY="/usr/local/bin/aegis-xray"
@@ -23,7 +23,7 @@ env_guard() {
     [[ ! -s "$WORK_DIR/ax.sh" ]] && curl -fsSL -m 10 "$SCRIPT_URL" -o "$WORK_DIR/ax.sh" 2>/dev/null || true
     chmod +x "$WORK_DIR/ax.sh" 2>/dev/null && ln -sf "$WORK_DIR/ax.sh" "$SHORTCUT"
     local miss=()
-    for c in curl jq unzip qrencode xxd; do ! command -v "$c" &>/dev/null && miss+=("$c"); done
+    for c in curl jq unzip qrencode; do ! command -v "$c" &>/dev/null && miss+=("$c"); done
     ! command -v ss &>/dev/null && miss+=("iproute2")
     if [[ ${#miss[@]} -gt 0 ]]; then
         echo -e "${cyan}>>> 正在补全依赖 (${miss[*]})...${plain}"
@@ -74,12 +74,12 @@ install_xray() {
     /tmp/xray version >/dev/null 2>&1 || { rm -f /tmp/xray; echo -e "${red}❌ 内核校验失败！${plain}"; return 1; }
     mv -f /tmp/xray "$BIN_XRAY"
 }
-# 可靠提取 ML-KEM-768（后量子）密钥对，取最后一套
+# 提取密钥对：取第一套（X25519 认证，短密钥）。临时密钥交换仍是抗量子的。
 gen_vlessenc() {
     local raw dec enc
     raw=$("$BIN_XRAY" vlessenc 2>/dev/null) || return 1
-    dec=$(printf '%s\n' "$raw" | sed -n 's/.*"decryption"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | tail -n1)
-    enc=$(printf '%s\n' "$raw" | sed -n 's/.*"encryption"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | tail -n1)
+    dec=$(printf '%s\n' "$raw" | sed -n 's/.*"decryption"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n1)
+    enc=$(printf '%s\n' "$raw" | sed -n 's/.*"encryption"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n1)
     [[ -n "$dec" && -n "$enc" && "$dec" == mlkem768* && "$enc" == mlkem768* ]] || return 1
     printf '%s\n%s\n' "$dec" "$enc"
 }
@@ -105,13 +105,13 @@ deploy_xhttp() {
     local uuid path keys dec enc
     uuid=$("$BIN_XRAY" uuid)
     # 路径：UUID 前 12 位 + 4 位随机，降低可预测性
-    path="/$(tr -d '-' <<<"$uuid" | cut -c1-12)$(head -c 2 /dev/urandom | xxd -p 2>/dev/null || echo "ax")"
+    path="/$(tr -d '-' <<<"$uuid" | cut -c1-16)"
     keys=$(gen_vlessenc) || { echo -e "${red}❌ 生成 ML-KEM-768 密钥失败！${plain}"; return 1; }
     dec=$(sed -n '1p' <<<"$keys")
     enc=$(sed -n '2p' <<<"$keys")
-    # 直连场景 security=none，不使用 flow（Vision 需要 TLS/REALITY）
+    # VLESS Encryption + Vision：官方建议开启 flow
     cat <<EOF > "${CONF_FILE}.tmp"
-{"log":{"loglevel":"warning"},"inbounds":[{"tag":"vless-xhttp-in","port":${port},"protocol":"vless","settings":{"clients":[{"id":"${uuid}"}],"decryption":"${dec}"},"streamSettings":{"network":"xhttp","xhttpSettings":{"path":"${path}","mode":"auto"},"security":"none","sockopt":{"tcpFastOpen":true}},"sniffing":{"enabled":true,"destOverride":["http","tls","quic"],"routeOnly":true}}],"outbounds":[{"protocol":"freedom","tag":"direct"}]}
+{"log":{"loglevel":"warning"},"inbounds":[{"tag":"vless-xhttp-in","port":${port},"protocol":"vless","settings":{"clients":[{"id":"${uuid}","flow":"xtls-rprx-vision"}],"decryption":"${dec}"},"streamSettings":{"network":"xhttp","xhttpSettings":{"path":"${path}","mode":"auto"},"security":"none","sockopt":{"tcpFastOpen":true}},"sniffing":{"enabled":true,"destOverride":["http","tls","quic"],"routeOnly":true}}],"outbounds":[{"protocol":"freedom","tag":"direct"}]}
 EOF
     jq . "${CONF_FILE}.tmp" > "${CONF_FILE}.tmp2" && mv -f "${CONF_FILE}.tmp2" "${CONF_FILE}.tmp"
     if ! "$BIN_XRAY" run -test -format json -c "${CONF_FILE}.tmp" >/dev/null 2>&1; then
@@ -206,10 +206,11 @@ EOF
                 echo -e "${yellow}请确认 Cloudflare Zero Trust Public Hostname 指向 → http://127.0.0.1:${PORT}${plain}"
                 print_links; read -rp "👉 按回车继续..." _ ;;
             2)
-                echo -e "\n  ${green}1.${plain} www.visa.com.hk  ${green}2.${plain} www.visa.com.sg  ${green}3.${plain} cloudflare-ech.com  ${green}4.${plain} www.wto.org  ${purple}5.${plain} 自定义"
-                read -rp "👉 请选择优选 [1-5, 回车默认 1]: " ac; ac="${ac//[[:space:]]/}"
+                echo -e "\n  ${green}1.${plain} www.visa.com.hk  ${green}2.${plain} www.visa.com.sg  ${green}3.${plain} cloudflare-ech.com  ${green}4.${plain} www.wto.org  ${purple}5.${plain} 自定义  ${cyan}0.${plain} 返回"
+                read -rp "👉 请选择优选 [0-5, 回车默认 1]: " ac; ac="${ac//[[:space:]]/}"
                 local nf="www.visa.com.hk"
                 case "${ac:-1}" in
+                    0) continue ;;
                     1) nf="www.visa.com.hk" ;; 2) nf="www.visa.com.sg" ;; 3) nf="cloudflare-ech.com" ;; 4) nf="www.wto.org" ;;
                     5) read -rp "👉 输入优选 IP 或域名: " cf; nf=$(clean_host "$cf"); [[ -z "$nf" || "$nf" != *.* ]] && nf="www.visa.com.hk" ;;
                     *) echo -e "${red}❌ 输入无效！${plain}"; sleep 1; continue ;;
@@ -234,16 +235,16 @@ print_links() {
     source "$META_FILE"
     local ip; ip=$(curl -fsSL4 -m 3 icanhazip.com 2>/dev/null || curl -fsSL4 -m 3 ip.sb 2>/dev/null || echo "YOUR_IP")
     local pe="${XHTTP_PATH//\//%2F}"
-    # 直连：security=none，无 flow
-    local dl="vless://${UUID}@${ip}:${PORT}?encryption=${ENC_KEY}&security=none&type=xhttp&path=${pe}&mode=auto#vless-xhttp"
+    # 直连：security=none + flow
+    local dl="vless://${UUID}@${ip}:${PORT}?encryption=${ENC_KEY}&flow=xtls-rprx-vision&security=none&type=xhttp&path=${pe}&mode=auto#vless-xhttp"
     echo -e "\n${cyan}================ [ 🖨️ VLESS-XHTTP 节点提取中心 ] =================${plain}"
     echo -e "\n${purple}【 1. VLESS-XHTTP 直连 | 端口: ${PORT} 】${plain}\n${yellow}${dl}${plain}\n"
     echo "$dl" | qrencode -t UTF8
     echo "$dl" > "$SUB_FILE" && chmod 600 "$SUB_FILE"
     if systemctl is-active --quiet aegis-argo-fixed && [[ -n "${ARGO_FIXED_DOMAIN:-}" ]]; then
         local fa="${CF_ADDR_FIXED:-www.visa.com.hk}"
-        # Argo：security=tls，mode=packet-up（过 CDN 兼容性最好），无 flow
-        local fl="vless://${UUID}@${fa}:443?encryption=${ENC_KEY}&security=tls&sni=${ARGO_FIXED_DOMAIN}&host=${ARGO_FIXED_DOMAIN}&alpn=h2&fp=chrome&type=xhttp&path=${pe}&mode=packet-up#vless-xhttp-argo"
+        # Argo：security=tls + flow，mode=packet-up（过 CDN 兼容性最好）
+        local fl="vless://${UUID}@${fa}:443?encryption=${ENC_KEY}&flow=xtls-rprx-vision&security=tls&sni=${ARGO_FIXED_DOMAIN}&host=${ARGO_FIXED_DOMAIN}&alpn=h2&fp=chrome&type=xhttp&path=${pe}&mode=packet-up#vless-xhttp-argo"
         echo -e "\n${purple}【 2. VLESS-XHTTP-Argo | 优选: ${fa} | SNI: ${ARGO_FIXED_DOMAIN} 】${plain}\n${purple}${fl}${plain}\n"
         echo "$fl" | qrencode -t UTF8
         echo "$fl" >> "$SUB_FILE"
@@ -299,6 +300,18 @@ while true; do
     # shellcheck disable=SC1090
     [[ -f "$META_FILE" ]] && source "$META_FILE" && p_info="${PORT:-'-----'}"
     systemctl is-active --quiet aegis-argo-fixed && st_a="${green}已连接 ✅${plain} ${purple}[${ARGO_FIXED_DOMAIN:-ZeroTrust}]${plain}"
+   
+    update_tip=""
+    if curl -fsSL -m 3 "$SCRIPT_URL" -o /tmp/ax_check.sh 2>/dev/null; then
+        r_ver=$(grep -E '^ax_VERSION=' /tmp/ax_check.sh 2>/dev/null | head -n1 | cut -d'"' -f2)
+        rm -f /tmp/ax_check.sh
+        if [[ -n "$r_ver" && "$r_ver" != "$ax_VERSION" ]]; then
+            update_tip="${yellow}🔥 发现新版本 v${r_ver}，请按 [5] 更新${plain}"
+        else
+            update_tip="${green}✅ ax 已是最新版 (v${ax_VERSION})${plain}"
+        fi
+    fi
+
     clear
     echo -e "${cyan}██╗   ██╗███████╗██╗      ██████╗ ██╗  ██╗${plain}"
     echo -e "${cyan}██║   ██║██╔════╝██║     ██╔═══██╗╚██╗██╔╝${plain}"
@@ -312,12 +325,13 @@ while true; do
     echo -e "   👨‍💻 作者GitHub项目 : ${blue}github.com/pwenxiang51-wq${plain}"
     echo -e "   📝 作者Velo.x博客 : ${blue}222382.xyz${plain}"
     echo -e "   ✈️ 作者Telegram   : ${blue}@Velox95${plain}"
+    echo -e "   ⚡ 更新状态: ${update_tip:-${yellow}检测中...${plain}}"
     echo -e "${cyan}======================================================================${plain}"
     echo -e "⚙️  ${yellow}核心状态:${plain} Xray ${cyan}v${ver_x}${plain} | 端口: ${cyan}${p_info}${plain} | 加速: $(get_bbr_stat)"
     echo -e "📡  ${yellow}运行状态:${plain} Xray: ${st_x}  | Argo: ${st_a}"
     echo -e "${cyan}----------------------------------------------------------------------${plain}"
     echo -e "  ${cyan}1.${plain} ➕ 部署/重置 VLESS-XHTTP            ${green}[ML-KEM-768 抗量子✨]${plain}"
-    echo -e "  ${cyan}2.${plain} ☁️ 挂载 Zero Trust 固定隧道          ${purple}[CDN 优选防封复活甲🛡️]${plain}"
+    echo -e "  ${cyan}2.${plain} ☁️ 挂载 Zero Trust 固定隧道         ${purple}[CDN 优选防封复活甲🛡️]${plain}"
     echo -e "  ${cyan}3.${plain} 🖨️ ${cyan}一键提取节点与二维码${plain}             ${green}[含聚合 Base64 订阅]${plain}"
     echo -e "  ${cyan}4.${plain} 📋 查看服务状态与运行日志           ${yellow}[进程/端口/连接诊断]${plain}"
     echo -e "  ${cyan}5.${plain} 🔄 检查并更新 Xray-core 内核        ${blue}[版本比对与语法预检]${plain}"
