@@ -296,6 +296,7 @@ nuke_all() {
     echo -e "${green}✅ ax 已彻底无痕卸载！${plain}"; exit 0
 }
 env_guard
+UPDATE_CHECKED=0
 while true; do
     st_x="${red}未运行 ❌${plain}"; st_a="${yellow}未启用 ○${plain}"; ver_x="未安装"; p_info="-----"
     [[ -x "$BIN_XRAY" ]] && ver_x=$("$BIN_XRAY" version 2>/dev/null | head -n1 | awk '{print $2}')
@@ -304,17 +305,18 @@ while true; do
     [[ -f "$META_FILE" ]] && source "$META_FILE" && p_info="${PORT:-'-----'}"
     systemctl is-active --quiet aegis-argo-fixed && st_a="${green}已连接 ✅${plain} ${purple}[${ARGO_FIXED_DOMAIN:-ZeroTrust}]${plain}"
    
-    update_tip=""
-    if curl -fsSL -m 3 "$SCRIPT_URL" -o /tmp/ax_check.sh 2>/dev/null; then
-        r_ver=$(grep -E '^ax_VERSION=' /tmp/ax_check.sh 2>/dev/null | head -n1 | cut -d'"' -f2)
-        rm -f /tmp/ax_check.sh
-        if [[ -n "$r_ver" && "$r_ver" != "$ax_VERSION" ]]; then
-            update_tip="${yellow}🔥 发现新版本 v${r_ver}，请按 [5] 更新${plain}"
-        else
-            update_tip="${green}✅ ax 已是最新版 (v${ax_VERSION})${plain}"
+   update_tip="${green}✅ ax 已是最新版 (v${ax_VERSION})${plain}"
+    if [[ "$UPDATE_CHECKED" -eq 0 ]]; then
+        if curl -fsSL -m 3 "$SCRIPT_URL" -o /tmp/ax_check.sh 2>/dev/null; then
+            r_ver=$(grep -E '^ax_VERSION=' /tmp/ax_check.sh 2>/dev/null | head -n1 | cut -d'"' -f2)
+            rm -f /tmp/ax_check.sh
+            if [[ -n "$r_ver" && "$r_ver" != "$ax_VERSION" ]]; then
+                update_tip="${yellow}🔥 发现新版本 v${r_ver}，请按 [5] 更新${plain}"
+            fi
         fi
+        UPDATE_CHECKED=1
     fi
-
+ 
     clear
     echo -e "${cyan}██╗   ██╗███████╗██╗      ██████╗ ██╗  ██╗${plain}"
     echo -e "${cyan}██║   ██║██╔════╝██║     ██╔═══██╗╚██╗██╔╝${plain}"
