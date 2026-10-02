@@ -1,6 +1,6 @@
 # 🛡️ Aegis-X (`ax`)
 
-极简高阶 `VLESS-XHTTP` 节点部署工具 | 原生 `ML-KEM-768 (0-RTT)` 抗量子加密 + Cloudflare Zero Trust 固定隧道穿透。
+极简高阶 `VLESS-XHTTP` 单节点部署工具 | 原生 `ML-KEM-768 (0-RTT)` 抗量子加密 + Cloudflare Zero Trust 固定隧道穿透。
 
 ## 🚀 一键安装
 
