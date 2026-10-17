@@ -165,7 +165,7 @@ setup_argo() {
         echo -e "              ☁️  Zero Trust 固定隧道配置中心"
         echo -e "${cyan}======================================================================${plain}"
         echo -e "  当前状态 : ${st}"
-        echo -e "  回源地址 : ${green}HTTP://127.0.0.1:${PORT}${plain} (CF Zero Trust 后台填写此地址)"
+        echo -e "  回源地址 : ${green}http://127.0.0.1:${PORT}${plain} (CF Zero Trust 后台填写此地址)"
         echo -e "${cyan}----------------------------------------------------------------------${plain}"
         echo -e "  ${cyan}1.${plain} 部署 / 更新 Zero Trust 固定隧道 (支持粘贴整行命令或纯 Token)"
         echo -e "  ${cyan}2.${plain} 切换客户端 CDN 优选地址 (当前: ${cyan}${CF_ADDR_FIXED:-www.visa.com.hk}${plain})"
