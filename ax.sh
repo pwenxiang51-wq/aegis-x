@@ -254,25 +254,40 @@ print_links() {
     echo -e "${blue}$(base64 -w 0 < "$SUB_FILE")${plain}\n"
 }
 update_cores() {
-    # 1. 顺手同步 GitHub 上的最新 ax.sh 脚本 (语法校验通过才覆盖)
+    # 1. 强制同步 GitHub 最新脚本（比文件内容，不依赖版本号）
     if curl -fsSL -m 5 "$SCRIPT_URL" -o /tmp/ax_new.sh 2>/dev/null && bash -n /tmp/ax_new.sh 2>/dev/null; then
         local r_ver; r_ver=$(grep -E '^ax_VERSION=' /tmp/ax_new.sh | head -n1 | cut -d'"' -f2)
-        if [[ -n "$r_ver" && "$r_ver" != "$ax_VERSION" ]]; then
-          mv -f /tmp/ax_new.sh "$WORK_DIR/ax.sh" && chmod +x "$WORK_DIR/ax.sh"
-          ln -sf "$WORK_DIR/ax.sh" "$SHORTCUT"
-          echo -e "${green}✅ 面板脚本已同步升级至 v${r_ver}！正在重启界面...${plain}"
-          sleep 1
-          exec "$WORK_DIR/ax.sh"
-       fi
+        if ! cmp -s /tmp/ax_new.sh "$WORK_DIR/ax.sh" 2>/dev/null; then
+            mv -f /tmp/ax_new.sh "$WORK_DIR/ax.sh" && chmod +x "$WORK_DIR/ax.sh"
+            ln -sf "$WORK_DIR/ax.sh" "$SHORTCUT"
+            echo -e "${green}✅ 面板脚本已同步${r_ver:+至 v${r_ver}}！正在重启界面...${plain}"
+            sleep 1
+            exec "$WORK_DIR/ax.sh"
+        else
+            echo -e "${green}✅ 面板脚本已是最新${r_ver:+ (v${r_ver})}${plain}"
+            rm -f /tmp/ax_new.sh
+        fi
+    else
+        echo -e "${yellow}⚠️ 无法拉取远程脚本，跳过面板更新${plain}"
+        rm -f /tmp/ax_new.sh
     fi
-    rm -f /tmp/ax_new.sh
-    # 2. 检查并更新 Xray-core 内核
+    # 2. 检查并更新 Xray-core
     local lv="未安装" rv=""
     [[ -x "$BIN_XRAY" ]] && lv=$("$BIN_XRAY" version 2>/dev/null | head -n1 | awk '{print $2}')
     rv=$(curl -fsSL -m 5 "https://api.github.com/repos/XTLS/Xray-core/releases/latest" 2>/dev/null | jq -r '.tag_name // empty' | sed 's/^v//')
-    echo -e "\n当前内核: ${purple}v${lv}${plain} | 最新内核: ${green}v${rv:-未知}${plain}"
-    [[ -n "$rv" && "$lv" == "$rv" ]] && { echo -e "${green}✅ Xray-core 已是最新版本，无需更新！${plain}"; return 0; }
+    echo -e "当前内核: ${purple}v${lv}${plain} | 最新内核: ${green}v${rv:-未知}${plain}"
+    if [[ -z "$rv" ]]; then
+        echo -e "${yellow}⚠️ 无法获取最新内核版本，跳过${plain}"
+        sleep 1
+        return 0
+    fi
+    if [[ "$lv" == "$rv" ]]; then
+        echo -e "${green}✅ Xray-core 已是最新版本，无需更新！${plain}"
+        sleep 1
+        return 0
+    fi
     install_xray && systemctl restart aegis-xray 2>/dev/null && echo -e "${green}✅ 内核更新完毕！${plain}"
+    sleep 1
 }
 inspect_logs() {
     echo -e "\n${cyan}=== [1. 进程与端口监听] ===${plain}"
@@ -305,14 +320,16 @@ while true; do
     [[ -f "$META_FILE" ]] && source "$META_FILE" && p_info="${PORT:-'-----'}"
     systemctl is-active --quiet aegis-argo-fixed && st_a="${green}已连接 ✅${plain} ${purple}[${ARGO_FIXED_DOMAIN:-ZeroTrust}]${plain}"
    
-   update_tip="${green}✅ ax 已是最新版 (v${ax_VERSION})${plain}"
+      update_tip="${green}✅ ax 已是最新版 (v${ax_VERSION})${plain}"
     if [[ "$UPDATE_CHECKED" -eq 0 ]]; then
         if curl -fsSL -m 3 "$SCRIPT_URL" -o /tmp/ax_check.sh 2>/dev/null; then
             r_ver=$(grep -E '^ax_VERSION=' /tmp/ax_check.sh 2>/dev/null | head -n1 | cut -d'"' -f2)
-            rm -f /tmp/ax_check.sh
-            if [[ -n "$r_ver" && "$r_ver" != "$ax_VERSION" ]]; then
-                update_tip="${yellow}🔥 发现新版本 v${r_ver}，请按 [5] 更新${plain}"
+            if ! cmp -s /tmp/ax_check.sh "$WORK_DIR/ax.sh" 2>/dev/null; then
+                update_tip="${yellow}🔥 发现脚本有更新${r_ver:+ (远程 v${r_ver})}，请按 [5] 更新${plain}"
+            else
+                update_tip="${green}✅ ax 已是最新版 (v${ax_VERSION})${plain}"
             fi
+            rm -f /tmp/ax_check.sh
         fi
         UPDATE_CHECKED=1
     fi
