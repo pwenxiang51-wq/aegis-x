@@ -314,6 +314,7 @@ nuke_all() {
 }
 env_guard
 UPDATE_CHECKED=0
+xray_tip="${yellow}检测中...${plain}"
 while true; do
     st_x="${red}未运行 ❌${plain}"; st_a="${yellow}未启用 ○${plain}"; ver_x="未安装"; p_info="-----"
     [[ -x "$BIN_XRAY" ]] && ver_x=$("$BIN_XRAY" version 2>/dev/null | head -n1 | awk '{print $2}')
@@ -322,8 +323,7 @@ while true; do
     [[ -f "$META_FILE" ]] && source "$META_FILE" && p_info="${PORT:-'-----'}"
     systemctl is-active --quiet aegis-argo-fixed && st_a="${green}已连接 ✅${plain} ${purple}[${ARGO_FIXED_DOMAIN:-ZeroTrust}]${plain}"
    
- update_tip="${green}✅ ax 已是最新版 (v${ax_VERSION})${plain}"
-    xray_tip=""
+    update_tip="${green}✅ ax 已是最新版 (v${ax_VERSION})${plain}"
     if [[ "$UPDATE_CHECKED" -eq 0 ]]; then
         # 脚本
         if curl -fsSL -m 3 "$SCRIPT_URL" -o /tmp/ax_check.sh 2>/dev/null; then
@@ -337,10 +337,12 @@ while true; do
         local_lv="未安装"
         [[ -x "$BIN_XRAY" ]] && local_lv=$("$BIN_XRAY" version 2>/dev/null | head -n1 | awk '{print $2}')
         remote_lv=$(curl -fsSL -m 3 "https://api.github.com/repos/XTLS/Xray-core/releases/latest" 2>/dev/null | jq -r '.tag_name // empty' | sed 's/^v//')
-        if [[ -n "$remote_lv" && "$local_lv" != "$remote_lv" && "$local_lv" != "未安装" ]]; then
+        if [[ -n "$remote_lv" && "$local_lv" != "未安装" && "$local_lv" != "$remote_lv" ]]; then
             xray_tip="${yellow}🔥 Xray 有新版本 v${remote_lv}（当前 v${local_lv}），请按 [5] 更新${plain}"
         elif [[ -n "$remote_lv" && "$local_lv" == "$remote_lv" ]]; then
             xray_tip="${green}✅ Xray 已是最新 (v${local_lv})${plain}"
+        else
+            xray_tip="${yellow}检测中...${plain}"
         fi
         UPDATE_CHECKED=1
     fi
@@ -378,7 +380,7 @@ while true; do
         2) setup_argo ;;
         3) print_links; read -rp "👉 按回车返回..." _ ;;
         4) inspect_logs; read -rp "👉 按回车返回..." _ ;;
-        5) update_cores; ;;
+        5) update_cores; UPDATE_CHECKED=0 ;;
         9) nuke_all ;;
         0) exit 0 ;;
         *) echo -e "${red}❌ 无效指令！请输入 0-5 或 9！${plain}"; sleep 1 ;;
