@@ -254,15 +254,15 @@ print_links() {
     echo -e "${blue}$(base64 -w 0 < "$SUB_FILE")${plain}\n"
 }
 update_cores() {
-    # 1. 强制同步 GitHub 最新脚本（比文件内容，不依赖版本号）
+    local need_exec=0 r_ver="" 
+    # 1. 先准备脚本（有更新先落到磁盘，先不 exec）
     if curl -fsSL -m 5 "$SCRIPT_URL" -o /tmp/ax_new.sh 2>/dev/null && bash -n /tmp/ax_new.sh 2>/dev/null; then
-        local r_ver; r_ver=$(grep -E '^ax_VERSION=' /tmp/ax_new.sh | head -n1 | cut -d'"' -f2)
+        r_ver=$(grep -E '^ax_VERSION=' /tmp/ax_new.sh | head -n1 | cut -d'"' -f2)
         if ! cmp -s /tmp/ax_new.sh "$WORK_DIR/ax.sh" 2>/dev/null; then
             mv -f /tmp/ax_new.sh "$WORK_DIR/ax.sh" && chmod +x "$WORK_DIR/ax.sh"
             ln -sf "$WORK_DIR/ax.sh" "$SHORTCUT"
-            echo -e "${green}✅ 面板脚本已同步${r_ver:+至 v${r_ver}}！正在重启界面...${plain}"
-            sleep 1
-            exec "$WORK_DIR/ax.sh"
+            echo -e "${green}✅ 面板脚本已同步${r_ver:+至 v${r_ver}}${plain}"
+            need_exec=1
         else
             echo -e "${green}✅ 面板脚本已是最新${r_ver:+ (v${r_ver})}${plain}"
             rm -f /tmp/ax_new.sh
@@ -271,22 +271,24 @@ update_cores() {
         echo -e "${yellow}⚠️ 无法拉取远程脚本，跳过面板更新${plain}"
         rm -f /tmp/ax_new.sh
     fi
-    # 2. 检查并更新 Xray-core
+    # 2. 再更新 Xray（同一次按 5 里完成）
     local lv="未安装" rv=""
     [[ -x "$BIN_XRAY" ]] && lv=$("$BIN_XRAY" version 2>/dev/null | head -n1 | awk '{print $2}')
     rv=$(curl -fsSL -m 5 "https://api.github.com/repos/XTLS/Xray-core/releases/latest" 2>/dev/null | jq -r '.tag_name // empty' | sed 's/^v//')
     echo -e "当前内核: ${purple}v${lv}${plain} | 最新内核: ${green}v${rv:-未知}${plain}"
     if [[ -z "$rv" ]]; then
         echo -e "${yellow}⚠️ 无法获取最新内核版本，跳过${plain}"
-        sleep 1
-        return 0
-    fi
-    if [[ "$lv" == "$rv" ]]; then
+    elif [[ "$lv" == "$rv" ]]; then
         echo -e "${green}✅ Xray-core 已是最新版本，无需更新！${plain}"
-        sleep 1
-        return 0
+    else
+        install_xray && systemctl restart aegis-xray 2>/dev/null && echo -e "${green}✅ 内核更新完毕！${plain}"
     fi
-    install_xray && systemctl restart aegis-xray 2>/dev/null && echo -e "${green}✅ 内核更新完毕！${plain}"
+    # 3. 脚本有更新才重启界面；否则直接回菜单
+    if [[ "$need_exec" -eq 1 ]]; then
+        echo -e "${green}正在重启界面...${plain}"
+        sleep 1
+        exec "$WORK_DIR/ax.sh"
+    fi
     sleep 1
 }
 inspect_logs() {
