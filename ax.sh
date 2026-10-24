@@ -314,6 +314,7 @@ nuke_all() {
 }
 env_guard
 UPDATE_CHECKED=0
+update_tip="${green}✅ ax 已是最新版 (v${ax_VERSION})${plain}"
 xray_tip="${yellow}检测中...${plain}"
 while true; do
     st_x="${red}未运行 ❌${plain}"; st_a="${yellow}未启用 ○${plain}"; ver_x="未安装"; p_info="-----"
@@ -324,7 +325,8 @@ while true; do
     systemctl is-active --quiet aegis-argo-fixed && st_a="${green}已连接 ✅${plain} ${purple}[${ARGO_FIXED_DOMAIN:-ZeroTrust}]${plain}"
    
     update_tip="${green}✅ ax 已是最新版 (v${ax_VERSION})${plain}"
-    if [[ "$UPDATE_CHECKED" -eq 0 ]]; then
+       if [[ "$UPDATE_CHECKED" -eq 0 ]]; then
+        update_tip="${green}✅ ax 已是最新版 (v${ax_VERSION})${plain}"
         # 脚本
         if curl -fsSL -m 3 "$SCRIPT_URL" -o /tmp/ax_check.sh 2>/dev/null; then
             r_ver=$(grep -E '^ax_VERSION=' /tmp/ax_check.sh 2>/dev/null | head -n1 | cut -d'"' -f2)
