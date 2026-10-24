@@ -320,16 +320,25 @@ while true; do
     [[ -f "$META_FILE" ]] && source "$META_FILE" && p_info="${PORT:-'-----'}"
     systemctl is-active --quiet aegis-argo-fixed && st_a="${green}已连接 ✅${plain} ${purple}[${ARGO_FIXED_DOMAIN:-ZeroTrust}]${plain}"
    
-      update_tip="${green}✅ ax 已是最新版 (v${ax_VERSION})${plain}"
+ update_tip="${green}✅ ax 已是最新版 (v${ax_VERSION})${plain}"
+    xray_tip=""
     if [[ "$UPDATE_CHECKED" -eq 0 ]]; then
+        # 脚本
         if curl -fsSL -m 3 "$SCRIPT_URL" -o /tmp/ax_check.sh 2>/dev/null; then
             r_ver=$(grep -E '^ax_VERSION=' /tmp/ax_check.sh 2>/dev/null | head -n1 | cut -d'"' -f2)
             if ! cmp -s /tmp/ax_check.sh "$WORK_DIR/ax.sh" 2>/dev/null; then
                 update_tip="${yellow}🔥 发现脚本有更新${r_ver:+ (远程 v${r_ver})}，请按 [5] 更新${plain}"
-            else
-                update_tip="${green}✅ ax 已是最新版 (v${ax_VERSION})${plain}"
             fi
             rm -f /tmp/ax_check.sh
+        fi
+        # Xray
+        local_lv="未安装"
+        [[ -x "$BIN_XRAY" ]] && local_lv=$("$BIN_XRAY" version 2>/dev/null | head -n1 | awk '{print $2}')
+        remote_lv=$(curl -fsSL -m 3 "https://api.github.com/repos/XTLS/Xray-core/releases/latest" 2>/dev/null | jq -r '.tag_name // empty' | sed 's/^v//')
+        if [[ -n "$remote_lv" && "$local_lv" != "$remote_lv" && "$local_lv" != "未安装" ]]; then
+            xray_tip="${yellow}🔥 Xray 有新版本 v${remote_lv}（当前 v${local_lv}），请按 [5] 更新${plain}"
+        elif [[ -n "$remote_lv" && "$local_lv" == "$remote_lv" ]]; then
+            xray_tip="${green}✅ Xray 已是最新 (v${local_lv})${plain}"
         fi
         UPDATE_CHECKED=1
     fi
@@ -347,7 +356,8 @@ while true; do
     echo -e "   👨‍💻 作者GitHub项目 : ${blue}github.com/pwenxiang51-wq${plain}"
     echo -e "   📝 作者Velo.x博客 : ${blue}222382.xyz${plain}"
     echo -e "   ✈️ 作者Telegram   : ${blue}@Velox95${plain}"
-    echo -e "   ⚡ 更新状态: ${update_tip:-${yellow}检测中...${plain}}"
+    echo -e "   ⚡ 脚本状态: ${update_tip:-${yellow}检测中...${plain}}"
+    echo -e "   ⚡ 内核状态: ${xray_tip:-${yellow}检测中...${plain}}"
     echo -e "${cyan}======================================================================${plain}"
     echo -e "⚙️  ${yellow}核心状态:${plain} Xray ${cyan}v${ver_x}${plain} | 端口: ${cyan}${p_info}${plain} | 加速: $(get_bbr_stat)"
     echo -e "📡  ${yellow}运行状态:${plain} Xray: ${st_x}  | Argo: ${st_a}"
