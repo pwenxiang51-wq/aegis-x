@@ -110,14 +110,21 @@ deploy_xhttp() {
     dec=$(sed -n '1p' <<<"$keys")
     enc=$(sed -n '2p' <<<"$keys")
     # VLESS Encryption + Vision：官方建议开启 flow
-    cat <<EOF > 
+    cat <<EOF > "${WORK_DIR}/config.test.json"
 {"log":{"loglevel":"warning"},"inbounds":[{"tag":"vless-xhttp-in","port":${port},"protocol":"vless","settings":{"clients":[{"id":"${uuid}","flow":"xtls-rprx-vision"}],"decryption":"${dec}"},"streamSettings":{"network":"xhttp","xhttpSettings":{"path":"${path}","mode":"auto"},"security":"none","sockopt":{"tcpFastOpen":true}},"sniffing":{"enabled":true,"destOverride":["http","tls","quic"],"routeOnly":true}}],"outbounds":[{"protocol":"freedom","tag":"direct"}]}
 EOF
-    jq .  > "${CONF_FILE}.tmp2" && mv -f "${CONF_FILE}.tmp2" 
-    if ! "$BIN_XRAY" run -test -format json -c "${WORK_DIR}/config.test.json" >/dev/null 2>&1; then
-        rm -f "${WORK_DIR}/config.test.json"; echo -e "${red}❌ JSON 预检失败，已阻断写入！${plain}"; return 1
+    if command -v jq &>/dev/null; then
+        jq . "${WORK_DIR}/config.test.json" > "${WORK_DIR}/config.test.json.pretty" \
+            && mv -f "${WORK_DIR}/config.test.json.pretty" "${WORK_DIR}/config.test.json"
+    fi
+    if ! "$BIN_XRAY" run -test -format json -c "${WORK_DIR}/config.test.json" 2>/tmp/ax_test.err; then
+        echo -e "${red}❌ JSON 预检失败，已阻断写入！${plain}"
+        [[ -s /tmp/ax_test.err ]] && cat /tmp/ax_test.err
+        rm -f "${WORK_DIR}/config.test.json" /tmp/ax_test.err
+        return 1
     fi
     mv -f "${WORK_DIR}/config.test.json" "$CONF_FILE" && chmod 600 "$CONF_FILE"
+    rm -f /tmp/ax_test.err
     cat <<EOF > /etc/systemd/system/aegis-xray.service
 [Unit]
 Description=Aegis-X Xray Service
