@@ -12,7 +12,7 @@ CONF_FILE="${WORK_DIR}/config.json"
 META_FILE="${WORK_DIR}/node.env"
 SUB_FILE="${WORK_DIR}/links.txt"
 [[ $EUID -ne 0 ]] && echo -e "${red}❌ 错误: 请使用 root 用户运行！${plain}" && exit 1
-trap 'rm -f /tmp/ax_* "${CONF_FILE}.tmp" 2>/dev/null; echo -e "\n${yellow}⚠️ 操作已取消。${plain}"; exit 130' INT TERM
+trap 'rm -f /tmp/ax_* "${WORK_DIR}/config.test.json" 2>/dev/null; echo -e "\n${yellow}⚠️ 操作已取消。${plain}"; exit 130' INT TERM
 clean_host() {
     local v="${1//[[:space:]]/}"
     v="${v#http://}"; v="${v#https://}"; echo "${v%%/*}"
@@ -110,14 +110,14 @@ deploy_xhttp() {
     dec=$(sed -n '1p' <<<"$keys")
     enc=$(sed -n '2p' <<<"$keys")
     # VLESS Encryption + Vision：官方建议开启 flow
-    cat <<EOF > "${CONF_FILE}.tmp"
+    cat <<EOF > 
 {"log":{"loglevel":"warning"},"inbounds":[{"tag":"vless-xhttp-in","port":${port},"protocol":"vless","settings":{"clients":[{"id":"${uuid}","flow":"xtls-rprx-vision"}],"decryption":"${dec}"},"streamSettings":{"network":"xhttp","xhttpSettings":{"path":"${path}","mode":"auto"},"security":"none","sockopt":{"tcpFastOpen":true}},"sniffing":{"enabled":true,"destOverride":["http","tls","quic"],"routeOnly":true}}],"outbounds":[{"protocol":"freedom","tag":"direct"}]}
 EOF
-    jq . "${CONF_FILE}.tmp" > "${CONF_FILE}.tmp2" && mv -f "${CONF_FILE}.tmp2" "${CONF_FILE}.tmp"
-    if ! "$BIN_XRAY" run -test -format json -c "${CONF_FILE}.tmp" >/dev/null 2>&1; then
-        rm -f "${CONF_FILE}.tmp"; echo -e "${red}❌ JSON 预检失败，已阻断写入！${plain}"; return 1
+    jq .  > "${CONF_FILE}.tmp2" && mv -f "${CONF_FILE}.tmp2" 
+    if ! "$BIN_XRAY" run -test -format json -c "${WORK_DIR}/config.test.json" >/dev/null 2>&1; then
+        rm -f "${WORK_DIR}/config.test.json"; echo -e "${red}❌ JSON 预检失败，已阻断写入！${plain}"; return 1
     fi
-    mv -f "${CONF_FILE}.tmp" "$CONF_FILE" && chmod 600 "$CONF_FILE"
+    mv -f "${WORK_DIR}/config.test.json" "$CONF_FILE" && chmod 600 "$CONF_FILE"
     cat <<EOF > /etc/systemd/system/aegis-xray.service
 [Unit]
 Description=Aegis-X Xray Service
