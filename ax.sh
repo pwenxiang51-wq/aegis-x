@@ -2,7 +2,7 @@
 export LANG=en_US.UTF-8
 set -uo pipefail
 red='\033[0;31m'; green='\033[0;32m'; yellow='\033[0;33m'; cyan='\033[0;36m'; blue='\033[0;94m'; purple='\033[1;35m'; plain='\033[0m'
-ax_VERSION="1.1.1"
+ax_VERSION="1.1.2"
 SCRIPT_URL="https://raw.githubusercontent.com/pwenxiang51-wq/aegis-x/main/ax.sh"
 WORK_DIR="/etc/aegis-x"
 BIN_XRAY="/usr/local/bin/aegis-xray"
@@ -179,9 +179,10 @@ refresh_sub_file() {
         echo "vless://${UUID}@${ip}:${PORT}?encryption=${ENC_KEY}&flow=xtls-rprx-vision&security=none&type=xhttp&path=${pe}&mode=auto#vless-xhttp-tcp" >> "$SUB_FILE"
     fi
     if [[ "${ENABLE_UDP:-0}" == "1" && -n "${UDP_PORT:-}" ]]; then
-        hop_q=""; [[ -n "${HOP_RANGE:-}" ]] && hop_q="&ports=${HOP_RANGE}"
-        sni_host="${UDP_SNI:-$ip}"
-        echo "vless://${UUID}@${ip}:${UDP_PORT}?encryption=${ENC_KEY}&flow=xtls-rprx-vision&security=tls&sni=${sni_host}&fp=chrome&alpn=h3&type=xhttp&path=${pe}&mode=auto${hop_q}#vless-xhttp-udp" >> "$SUB_FILE"
+        hop_q=""; [[ -n "${HOP_RANGE:-}" ]] && hop_q="&mport=${HOP_RANGE}"
+        sni_host="${UDP_SNI:-aegis-x.local}"
+        # 自签必须 allowInsecure；无 Vision；H3 用 stream-one
+        echo "vless://${UUID}@${ip}:${UDP_PORT}?encryption=${ENC_KEY}&security=tls&sni=${sni_host}&fp=chrome&alpn=h3&type=xhttp&path=${pe}&mode=stream-one&allowInsecure=1${hop_q}#vless-xhttp-udp" >> "$SUB_FILE"
     fi
     if systemctl is-active --quiet aegis-argo-fixed && [[ -n "${ARGO_FIXED_DOMAIN:-}" ]]; then
         fa="${CF_ADDR_FIXED:-www.visa.com.hk}"
@@ -194,17 +195,22 @@ refresh_sub_file() {
 }
 
 pick_port() {
-    local hint="$1" old="${2:-}"
+    local hint="$1" old="${2:-}" prefer443="${3:-0}"
     local in_p port=""
-    read -rp "👉 ${hint} [1024-65535，回车随机]: " in_p
+    local range_hint="1-65535"
+    [[ "$prefer443" == "1" ]] && range_hint="回车=443，或 1-65535"
+    read -rp "👉 ${hint} [${range_hint}]: " in_p
     in_p="${in_p//[[:space:]]/}"
-    if [[ "$in_p" =~ ^[0-9]+$ ]] && (( in_p >= 1024 && in_p <= 65535 )) && { [[ "$in_p" == "$old" ]] || ! ss -tulpn 2>/dev/null | grep -qE ":${in_p}\b"; }; then
+    if [[ -z "$in_p" && "$prefer443" == "1" ]]; then
+        in_p="443"
+    fi
+    if [[ "$in_p" =~ ^[0-9]+$ ]] && (( in_p >= 1 && in_p <= 65535 )) && { [[ "$in_p" == "$old" ]] || ! ss -tulpn 2>/dev/null | grep -qE ":${in_p}\b"; }; then
         port="$in_p"
     else
-        [[ -n "$in_p" ]] && echo -e "${yellow}⚠️ 端口无效或已占用，自动随机...${plain}"
+        [[ -n "$in_p" ]] && echo -e "${yellow}⚠️ 端口无效或已占用，自动随机...${plain}" >&2
         while true; do port=$(shuf -i 20000-58000 -n 1); ! ss -tulpn 2>/dev/null | grep -qE ":${port}\b" && break; done
     fi
-    echo "$port"
+    printf '%s\n' "$port"
 }
 
 maybe_qr() {
@@ -249,6 +255,7 @@ deploy_xhttp() {
     [[ ! -x "$BIN_XRAY" ]] && { install_xray || return 1; }
 
     local port="" udp_port="" hop_range="" uuid path keys dec enc
+    local UDP_SNI_VAL=""
     uuid=$("$BIN_XRAY" uuid)
     path="/$(tr -d '-' <<<"$uuid" | cut -c1-16)"
     keys=$(gen_vlessenc) || { echo -e "${red}❌ 生成 ML-KEM-768 密钥失败！${plain}"; return 1; }
@@ -261,7 +268,7 @@ deploy_xhttp() {
 
     if [[ "$enable_udp" -eq 1 ]]; then
         echo -e "${cyan}UDP/H3 端口建议 443（更像正常 HTTPS），也可高位。${plain}"
-        udp_port=$(pick_port "UDP 监听端口" "$old_udp")
+        udp_port=$(pick_port "UDP 监听端口" "$old_udp" 1)
         read -rp "👉 端口跳跃范围 [回车=默认约1000端口 / 如 40000-40999 / 0=关闭]: " hop_in
         hop_in="${hop_in//[[:space:]]/}"
         if [[ "$hop_in" == "0" ]]; then
@@ -281,10 +288,11 @@ deploy_xhttp() {
             (( start < 1024 )) && start=1024
             hop_range="${start}-${end}"
         fi
-        if ! gen_self_signed "${ip:-aegis-x}.local"; then
-            gen_self_signed "aegis-x.local" || { echo -e "${red}❌ 自签证书失败！${plain}"; return 1; }
+        if ! gen_self_signed "aegis-x.local"; then
+            echo -e "${red}❌ 自签证书失败！${plain}"; return 1
         fi
-        echo -e "${green}✅ 自签证书已生成（客户端 SNI 填 IP 或任意域名，并允许不安全证书）${plain}"
+        UDP_SNI_VAL="aegis-x.local"
+        echo -e "${green}✅ 自签证书 CN=aegis-x.local（链接 SNI 已对齐，并带 allowInsecure）${plain}"
     fi
 
     local inbounds="[" first=1
@@ -294,7 +302,7 @@ deploy_xhttp() {
     fi
     if [[ "$enable_udp" -eq 1 ]]; then
         [[ "$first" -eq 0 ]] && inbounds+=","
-        inbounds+="{\"tag\":\"vless-xhttp-udp\",\"port\":${udp_port},\"protocol\":\"vless\",\"settings\":{\"clients\":[{\"id\":\"${uuid}\",\"flow\":\"xtls-rprx-vision\"}],\"decryption\":\"${dec}\"},\"streamSettings\":{\"network\":\"xhttp\",\"security\":\"tls\",\"tlsSettings\":{\"certificates\":[{\"certificateFile\":\"${CERT_FILE}\",\"keyFile\":\"${KEY_FILE}\"}],\"alpn\":[\"h3\"]},\"xhttpSettings\":{\"path\":\"${path}\",\"mode\":\"auto\"}},\"sniffing\":{\"enabled\":true,\"destOverride\":[\"http\",\"tls\",\"quic\"],\"routeOnly\":true}}"
+        inbounds+="{\"tag\":\"vless-xhttp-udp\",\"port\":${udp_port},\"protocol\":\"vless\",\"settings\":{\"clients\":[{\"id\":\"${uuid}\"}],\"decryption\":\"${dec}\"},\"streamSettings\":{\"network\":\"xhttp\",\"security\":\"tls\",\"tlsSettings\":{\"certificates\":[{\"certificateFile\":\"${CERT_FILE}\",\"keyFile\":\"${KEY_FILE}\"}],\"alpn\":[\"h3\"]},\"xhttpSettings\":{\"path\":\"${path}\",\"mode\":\"stream-one\"}},\"sniffing\":{\"enabled\":true,\"destOverride\":[\"http\",\"tls\",\"quic\"],\"routeOnly\":true}}"
     fi
     inbounds+="]"
 
@@ -362,7 +370,7 @@ DEC_KEY="${dec}"
 ENABLE_TCP="${enable_tcp}"
 ENABLE_UDP="${enable_udp}"
 HOP_RANGE="${hop_range:-}"
-UDP_SNI=""
+UDP_SNI="${UDP_SNI_VAL:-aegis-x.local}"
 ARGO_FIXED_DOMAIN="${f_dom}"
 CF_ADDR_FIXED="${f_addr}"
 SUB_PORT="${sub_port}"
@@ -372,6 +380,10 @@ EOF
     refresh_sub_file
 
     echo -e "${green}✅ 部署完成！${plain}"
+    if [[ -n "$f_dom" && -n "$old_p" && -n "${port:-}" && "$old_p" != "$port" ]]; then
+        echo -e "${yellow}⚠️ TCP 端口已从 ${old_p} 改为 ${port}，请到 Cloudflare Zero Trust 把 Public Hostname 回源改成 http://127.0.0.1:${port}${plain}"
+    fi
+
     [[ "$enable_tcp" -eq 1 ]] && echo -e "   TCP: ${cyan}${port}${plain}"
     [[ "$enable_udp" -eq 1 ]] && echo -e "   UDP: ${cyan}${udp_port}${plain}${hop_range:+  跳跃 ${hop_range}}"
     print_links
@@ -483,11 +495,11 @@ print_links() {
     fi
 
     if [[ "${ENABLE_UDP:-0}" == "1" && -n "${UDP_PORT:-}" ]]; then
-        hop_q=""; [[ -n "${HOP_RANGE:-}" ]] && hop_q="&ports=${HOP_RANGE}"
-        sni_host="${UDP_SNI:-$ip}"
-        ul="vless://${UUID}@${ip}:${UDP_PORT}?encryption=${ENC_KEY}&flow=xtls-rprx-vision&security=tls&sni=${sni_host}&fp=chrome&alpn=h3&type=xhttp&path=${pe}&mode=auto${hop_q}#vless-xhttp-udp"
+        hop_q=""; [[ -n "${HOP_RANGE:-}" ]] && hop_q="&mport=${HOP_RANGE}"
+        sni_host="${UDP_SNI:-aegis-x.local}"
+        ul="vless://${UUID}@${ip}:${UDP_PORT}?encryption=${ENC_KEY}&security=tls&sni=${sni_host}&fp=chrome&alpn=h3&type=xhttp&path=${pe}&mode=stream-one&allowInsecure=1${hop_q}#vless-xhttp-udp"
         echo -e "\n${purple}【 UDP H3 | 端口: ${UDP_PORT}${HOP_RANGE:+ | 跳跃: ${HOP_RANGE}} 】${plain}\n${yellow}${ul}${plain}\n"
-        echo -e "${yellow}   客户端需允许自签证书 / allowInsecure${plain}"
+        echo -e "${yellow}   SNI=${sni_host} · allowInsecure=1 · mode=stream-one · 无 Vision${plain}"
         maybe_qr "$ul"
     fi
 
