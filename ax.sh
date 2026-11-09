@@ -2,7 +2,7 @@
 export LANG=en_US.UTF-8
 set -uo pipefail
 red='\033[0;31m'; green='\033[0;32m'; yellow='\033[0;33m'; cyan='\033[0;36m'; blue='\033[0;94m'; purple='\033[1;35m'; plain='\033[0m'
-ax_VERSION="1.0.8"
+ax_VERSION="1.1.0"
 SCRIPT_URL="https://raw.githubusercontent.com/pwenxiang51-wq/aegis-x/main/ax.sh"
 WORK_DIR="/etc/aegis-x"
 BIN_XRAY="/usr/local/bin/aegis-xray"
@@ -10,7 +10,10 @@ BIN_ARGO="/usr/local/bin/aegis-argo"
 SHORTCUT="/usr/local/bin/ax"
 CONF_FILE="${WORK_DIR}/config.json"
 META_FILE="${WORK_DIR}/node.env"
-SUB_FILE="${WORK_DIR}/links.txt"
+SUB_FILE="${WORK_DIR}/sub.txt"
+SUB_DIR="${WORK_DIR}/sub"
+CERT_FILE="${WORK_DIR}/cert.pem"
+KEY_FILE="${WORK_DIR}/key.pem"
 [[ $EUID -ne 0 ]] && echo -e "${red}❌ 错误: 请使用 root 用户运行！${plain}" && exit 1
 trap 'rm -f /tmp/ax_* "${WORK_DIR}/config.test.json" 2>/dev/null; echo -e "\n${yellow}⚠️ 操作已取消。${plain}"; exit 130' INT TERM
 clean_host() {
@@ -18,13 +21,14 @@ clean_host() {
     v="${v#http://}"; v="${v#https://}"; echo "${v%%/*}"
 }
 env_guard() {
-    mkdir -p "$WORK_DIR" && chmod 700 "$WORK_DIR"
+    mkdir -p "$WORK_DIR" "$SUB_DIR" && chmod 700 "$WORK_DIR"
     [[ -f "$0" && "$(realpath "$0" 2>/dev/null)" != "$WORK_DIR/ax.sh" ]] && cp -f "$0" "$WORK_DIR/ax.sh" 2>/dev/null || true
     [[ ! -s "$WORK_DIR/ax.sh" ]] && curl -fsSL -m 10 "$SCRIPT_URL" -o "$WORK_DIR/ax.sh" 2>/dev/null || true
     chmod +x "$WORK_DIR/ax.sh" 2>/dev/null && ln -sf "$WORK_DIR/ax.sh" "$SHORTCUT"
     local miss=()
-    for c in curl jq unzip qrencode; do ! command -v "$c" &>/dev/null && miss+=("$c"); done
+    for c in curl jq unzip qrencode openssl; do ! command -v "$c" &>/dev/null && miss+=("$c"); done
     ! command -v ss &>/dev/null && miss+=("iproute2")
+    ! command -v python3 &>/dev/null && miss+=("python3")
     if [[ ${#miss[@]} -gt 0 ]]; then
         echo -e "${cyan}>>> 正在补全依赖 (${miss[*]})...${plain}"
         export DEBIAN_FRONTEND=noninteractive
@@ -74,15 +78,69 @@ install_xray() {
     /tmp/xray version >/dev/null 2>&1 || { rm -f /tmp/xray; echo -e "${red}❌ 内核校验失败！${plain}"; return 1; }
     mv -f /tmp/xray "$BIN_XRAY"
 }
-# 提取密钥对：取第一套（X25519 认证，短密钥）。临时密钥交换仍是抗量子的。
+# 提取密钥对：取第二套（完整 ML-KEM-768 认证，长密钥）
 gen_vlessenc() {
-    local raw dec enc
+    local raw
     raw=$("$BIN_XRAY" vlessenc 2>/dev/null) || return 1
-    dec=$(printf '%s\n' "$raw" | sed -n 's/.*"decryption"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n1)
-    enc=$(printf '%s\n' "$raw" | sed -n 's/.*"encryption"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n1)
+    dec=$(printf '%s\n' "$raw" | awk -F'"' '/"decryption"/{d=$4} END{print d}')
+    enc=$(printf '%s\n' "$raw" | awk -F'"' '/"encryption"/{e=$4} END{print e}')
     [[ -n "$dec" && -n "$enc" && "$dec" == mlkem768* && "$enc" == mlkem768* ]] || return 1
     printf '%s\n%s\n' "$dec" "$enc"
 }
+
+start_sub_server() {
+    local port="$1" token="$2"
+    mkdir -p "$SUB_DIR"
+    ln -sfd "$SUB_FILE" "${SUB_DIR}/${token}"
+    cat > /etc/systemd/system/aegis-sub.service <<EOF
+[Unit]
+Description=Aegis-X Subscription HTTP
+After=network.target
+[Service]
+Type=simple
+WorkingDirectory=${SUB_DIR}
+ExecStart=$(command -v python3) -m http.server ${port} --bind 0.0.0.0
+Restart=on-failure
+RestartSec=2
+NoNewPrivileges=true
+[Install]
+WantedBy=multi-user.target
+EOF
+    systemctl daemon-reload
+    systemctl enable --now aegis-sub >/dev/null 2>&1
+    systemctl restart aegis-sub
+    manage_port open "$port"
+}
+
+stop_sub_server() {
+    local port="${1:-}"
+    systemctl disable --now aegis-sub 2>/dev/null || true
+    rm -f /etc/systemd/system/aegis-sub.service
+    systemctl daemon-reload
+    [[ -n "$port" ]] && manage_port close "$port"
+}
+
+refresh_sub_file() {
+    [[ -f "$META_FILE" ]] || return 0
+    # shellcheck disable=SC1090
+    source "$META_FILE"
+    local ip pe
+    ip=$(curl -fsSL4 -m 3 icanhazip.com 2>/dev/null || curl -fsSL4 -m 3 ip.sb 2>/dev/null || echo "YOUR_IP")
+    pe="${XHTTP_PATH//\//%2F}"
+    : > "$SUB_FILE"
+    if [[ -n "${PORT:-}" ]]; then
+        echo "vless://${UUID}@${ip}:${PORT}?encryption=${ENC_KEY}&flow=xtls-rprx-vision&security=none&type=xhttp&path=${pe}&mode=auto#vless-xhttp-tcp" >> "$SUB_FILE"
+    fi
+    if systemctl is-active --quiet aegis-argo-fixed && [[ -n "${ARGO_FIXED_DOMAIN:-}" ]]; then
+        local fa="${CF_ADDR_FIXED:-www.visa.com.hk}"
+        echo "vless://${UUID}@${fa}:443?encryption=${ENC_KEY}&flow=xtls-rprx-vision&security=tls&sni=${ARGO_FIXED_DOMAIN}&host=${ARGO_FIXED_DOMAIN}&alpn=h2&fp=chrome&type=xhttp&path=${pe}&mode=packet-up#vless-xhttp-argo" >> "$SUB_FILE"
+    fi
+    chmod 644 "$SUB_FILE"
+    if [[ -n "${SUB_TOKEN:-}" && -d "$SUB_DIR" ]]; then
+        ln -sfd "$SUB_FILE" "${SUB_DIR}/${SUB_TOKEN}"
+    fi
+}
+
 deploy_xhttp() {
     local old_p="" f_dom="" f_addr="www.visa.com.hk"
     # shellcheck disable=SC1090
@@ -142,6 +200,10 @@ EOF
     systemctl daemon-reload && systemctl enable --now aegis-xray >/dev/null 2>&1 && systemctl restart aegis-xray
     [[ -n "$old_p" && "$old_p" != "$port" ]] && manage_port close "$old_p"
     manage_port open "$port"
+    local sub_port="" sub_token=""
+    sub_token=$(head -c 16 /dev/urandom | od -An -tx1 | tr -d ' \n')
+    while true; do sub_port=$(shuf -i 18000-28000 -n 1); ! ss -tulpn 2>/dev/null | grep -qE ":${sub_port}\b" && break; done
+    start_sub_server "$sub_port" "$sub_token"
     cat <<EOF > "$META_FILE"
 PORT="${port}"
 UUID="${uuid}"
@@ -150,8 +212,11 @@ ENC_KEY="${enc}"
 DEC_KEY="${dec}"
 ARGO_FIXED_DOMAIN="${f_dom}"
 CF_ADDR_FIXED="${f_addr}"
+SUB_PORT="${sub_port}"
+SUB_TOKEN="${sub_token}"
 EOF
     chmod 600 "$META_FILE"
+    refresh_sub_file
     echo -e "${green}✅ VLESS-XHTTP 已启动 (端口: ${port})！${plain}"
     print_links
 }
@@ -240,25 +305,32 @@ print_links() {
     [[ ! -f "$META_FILE" ]] && { echo -e "${red}❌ 尚未部署节点！${plain}"; return 0; }
     # shellcheck disable=SC1090
     source "$META_FILE"
+    refresh_sub_file
     local ip; ip=$(curl -fsSL4 -m 3 icanhazip.com 2>/dev/null || curl -fsSL4 -m 3 ip.sb 2>/dev/null || echo "YOUR_IP")
     local pe="${XHTTP_PATH//\//%2F}"
     # 直连：security=none + flow
     local dl="vless://${UUID}@${ip}:${PORT}?encryption=${ENC_KEY}&flow=xtls-rprx-vision&security=none&type=xhttp&path=${pe}&mode=auto#vless-xhttp"
     echo -e "\n${cyan}================ [ 🖨️ VLESS-XHTTP 节点提取中心 ] =================${plain}"
     echo -e "\n${purple}【 1. VLESS-XHTTP 直连 | 端口: ${PORT} 】${plain}\n${yellow}${dl}${plain}\n"
-    echo "$dl" | qrencode -t UTF8
-    echo "$dl" > "$SUB_FILE" && chmod 600 "$SUB_FILE"
+    if [[ ${#dl} -le 1200 ]]; then echo "$dl" | qrencode -t UTF8 -m 1 2>/dev/null || true; else echo -e "${yellow}⚠️ 链接过长，跳过终端二维码（请用订阅）${plain}"; fi
     if systemctl is-active --quiet aegis-argo-fixed && [[ -n "${ARGO_FIXED_DOMAIN:-}" ]]; then
         local fa="${CF_ADDR_FIXED:-www.visa.com.hk}"
         # Argo：security=tls + flow，mode=packet-up（过 CDN 兼容性最好）
         local fl="vless://${UUID}@${fa}:443?encryption=${ENC_KEY}&flow=xtls-rprx-vision&security=tls&sni=${ARGO_FIXED_DOMAIN}&host=${ARGO_FIXED_DOMAIN}&alpn=h2&fp=chrome&type=xhttp&path=${pe}&mode=packet-up#vless-xhttp-argo"
         echo -e "\n${purple}【 2. VLESS-XHTTP-Argo | 优选: ${fa} | SNI: ${ARGO_FIXED_DOMAIN} 】${plain}\n${purple}${fl}${plain}\n"
-        echo "$fl" | qrencode -t UTF8
-        echo "$fl" >> "$SUB_FILE"
+        if [[ ${#fl} -le 1200 ]]; then echo "$fl" | qrencode -t UTF8 -m 1 2>/dev/null || true; else echo -e "${yellow}⚠️ 链接过长，跳过终端二维码（请用订阅）${plain}"; fi
     fi
     echo -e "\n${cyan}----------------------------------------------------------------------${plain}"
-    echo -e "${yellow}>>> 🔗 聚合 Base64 订阅 (复制下方蓝字进 v2rayN 按 Ctrl+V 导入)：${plain}"
-    echo -e "${blue}$(base64 -w 0 < "$SUB_FILE")${plain}\n"
+    if [[ -n "${SUB_PORT:-}" && -n "${SUB_TOKEN:-}" ]]; then
+        local sub_url="http://${ip}:${SUB_PORT}/${SUB_TOKEN}"
+        echo -e "${green}>>> 订阅链接（客户端添加此 URL，之后只需「更新订阅」）：${plain}"
+        echo -e "${blue}${sub_url}${plain}"
+        echo -e "${yellow}    返回内容为每行一条 vless:// ；若客户端要 Base64 用下方备用串${plain}"
+    fi
+    echo -e "\n${yellow}>>> 备用：聚合 Base64（可手动粘贴导入）：${plain}"
+    if [[ -s "$SUB_FILE" ]]; then
+        echo -e "${blue}$(base64 -w 0 < "$SUB_FILE" 2>/dev/null || base64 < "$SUB_FILE" | tr -d '\n')${plain}\n"
+    fi
 }
 update_cores() {
     local need_exec=0 r_ver="" 
@@ -311,7 +383,8 @@ nuke_all() {
     [[ "${cf//[[:space:]]/}" != [yY] ]] && return 0
     # shellcheck disable=SC1090
     [[ -f "$META_FILE" ]] && source "$META_FILE" && manage_port close "${PORT:-}"
-    for s in aegis-xray aegis-argo aegis-argo-temp aegis-argo-fixed; do
+    [[ -f "$META_FILE" ]] && source "$META_FILE" 2>/dev/null && stop_sub_server "${SUB_PORT:-}"
+    for s in aegis-xray aegis-argo aegis-argo-temp aegis-argo-fixed aegis-sub; do
         systemctl stop "$s" 2>/dev/null || true; systemctl disable "$s" 2>/dev/null || true; rm -f "/etc/systemd/system/${s}.service"
     done
     systemctl daemon-reload
@@ -377,7 +450,7 @@ while true; do
     echo -e "${cyan}----------------------------------------------------------------------${plain}"
     echo -e "  ${cyan}1.${plain} ➕ 部署/重置 VLESS-XHTTP            ${green}[ML-KEM-768 抗量子✨]${plain}"
     echo -e "  ${cyan}2.${plain} ☁️ 挂载 Zero Trust 固定隧道         ${purple}[CDN 优选防封复活甲🛡️]${plain}"
-    echo -e "  ${cyan}3.${plain} 🖨️ ${cyan}一键提取节点与二维码${plain}             ${green}[含聚合 Base64 订阅]${plain}"
+    echo -e "  ${cyan}3.${plain} 🖨️ ${cyan}一键提取节点与订阅链接${plain}             ${green}[HTTP订阅 + 可选二维码]${plain}"
     echo -e "  ${cyan}4.${plain} 📋 查看服务状态与运行日志           ${yellow}[进程/端口/连接诊断]${plain}"
     echo -e "  ${cyan}5.${plain} 🔄 检查并更新 Xray-core 内核        ${blue}[版本比对与语法预检]${plain}"
     echo -e "${cyan}----------------------------------------------------------------------${plain}"
