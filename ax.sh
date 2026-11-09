@@ -2,7 +2,7 @@
 export LANG=en_US.UTF-8
 set -uo pipefail
 red='\033[0;31m'; green='\033[0;32m'; yellow='\033[0;33m'; cyan='\033[0;36m'; blue='\033[0;94m'; purple='\033[1;35m'; plain='\033[0m'
-ax_VERSION="1.1.4"
+ax_VERSION="1.1.5"
 SCRIPT_URL="https://raw.githubusercontent.com/pwenxiang51-wq/aegis-x/main/ax.sh"
 WORK_DIR="/etc/aegis-x"
 BIN_XRAY="/usr/local/bin/aegis-xray"
@@ -145,6 +145,8 @@ ip_to_sslip() {
 
 install_acme() {
     if [[ -x "$HOME/.acme.sh/acme.sh" ]]; then
+        # 已装过：修正 v1.1.3 残留的坏邮箱 ax@racknerd-c1a129d（无点，LE 会拒）
+        "$HOME/.acme.sh/acme.sh" --register-account -m "ax@aegis-x.local" >/dev/null 2>&1 || true
         return 0
     fi
     echo -e "${yellow}>>> 安装 acme.sh ...${plain}"
@@ -269,6 +271,10 @@ pick_port() {
     in_p="${in_p//[[:space:]]/}"
     if [[ -z "$in_p" && "$prefer443" == "1" ]]; then
         in_p="443"
+    fi
+    # 回车留空且有旧端口：沿用旧端口（否则每次重部署都随机换端口，Argo 回源就断）
+    if [[ -z "$in_p" && -n "$old" ]]; then
+        in_p="$old"
     fi
     if [[ "$in_p" =~ ^[0-9]+$ ]] && (( in_p >= 1 && in_p <= 65535 )) && { [[ "$in_p" == "$old" ]] || ! ss -tulpn 2>/dev/null | grep -qE ":${in_p}\b"; }; then
         port="$in_p"
