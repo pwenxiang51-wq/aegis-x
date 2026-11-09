@@ -2,7 +2,7 @@
 export LANG=en_US.UTF-8
 set -uo pipefail
 red='\033[0;31m'; green='\033[0;32m'; yellow='\033[0;33m'; cyan='\033[0;36m'; blue='\033[0;94m'; purple='\033[1;35m'; plain='\033[0m'
-ax_VERSION="1.1.0"
+ax_VERSION="1.1.1"
 SCRIPT_URL="https://raw.githubusercontent.com/pwenxiang51-wq/aegis-x/main/ax.sh"
 WORK_DIR="/etc/aegis-x"
 BIN_XRAY="/usr/local/bin/aegis-xray"
@@ -16,10 +16,12 @@ CERT_FILE="${WORK_DIR}/cert.pem"
 KEY_FILE="${WORK_DIR}/key.pem"
 [[ $EUID -ne 0 ]] && echo -e "${red}❌ 错误: 请使用 root 用户运行！${plain}" && exit 1
 trap 'rm -f /tmp/ax_* "${WORK_DIR}/config.test.json" 2>/dev/null; echo -e "\n${yellow}⚠️ 操作已取消。${plain}"; exit 130' INT TERM
+
 clean_host() {
     local v="${1//[[:space:]]/}"
     v="${v#http://}"; v="${v#https://}"; echo "${v%%/*}"
 }
+
 env_guard() {
     mkdir -p "$WORK_DIR" "$SUB_DIR" && chmod 700 "$WORK_DIR"
     [[ -f "$0" && "$(realpath "$0" 2>/dev/null)" != "$WORK_DIR/ax.sh" ]] && cp -f "$0" "$WORK_DIR/ax.sh" 2>/dev/null || true
@@ -35,6 +37,7 @@ env_guard() {
         apt-get update -qq && apt-get install -y -qq "${miss[@]}" ca-certificates >/dev/null 2>&1
     fi
 }
+
 get_bbr_stat() {
     local bbr="" rmem=""
     read -r bbr < /proc/sys/net/ipv4/tcp_congestion_control 2>/dev/null || bbr="unknown"
@@ -47,6 +50,7 @@ get_bbr_stat() {
         echo -e "${yellow}${bbr^^}${plain}"
     fi
 }
+
 ensure_bbr() {
     grep -q "bbr" /proc/sys/net/ipv4/tcp_congestion_control 2>/dev/null && return 0
     modprobe tcp_bbr 2>/dev/null || true
@@ -57,19 +61,51 @@ ensure_bbr() {
     fi
     sysctl -p >/dev/null 2>&1 || true
 }
+
+# act open|close  p: port or a-b  proto tcp|udp
 manage_port() {
-    local act="$1" p="${2:-}"
+    local act="$1" p="${2:-}" proto="${3:-tcp}"
     [[ -z "$p" ]] && return 0
-    if [[ "$act" == "open" ]]; then
-        command -v ufw &>/dev/null && ufw status 2>/dev/null | grep -q "active" && ufw allow "${p}/tcp" >/dev/null 2>&1 || true
-        iptables -C INPUT -p tcp --dport "$p" -j ACCEPT 2>/dev/null || iptables -I INPUT -p tcp --dport "$p" -j ACCEPT 2>/dev/null || true
-        ip6tables -C INPUT -p tcp --dport "$p" -j ACCEPT 2>/dev/null || ip6tables -I INPUT -p tcp --dport "$p" -j ACCEPT 2>/dev/null || true
+    if [[ "$p" == *-* ]]; then
+        local a="${p%-*}" b="${p#*-}"
+        if [[ "$act" == "open" ]]; then
+            command -v ufw &>/dev/null && ufw status 2>/dev/null | grep -q "active" && ufw allow "${a}:${b}/${proto}" >/dev/null 2>&1 || true
+            iptables -C INPUT -p "$proto" --dport "$a:$b" -j ACCEPT 2>/dev/null || iptables -I INPUT -p "$proto" --dport "$a:$b" -j ACCEPT 2>/dev/null || true
+            ip6tables -C INPUT -p "$proto" --dport "$a:$b" -j ACCEPT 2>/dev/null || ip6tables -I INPUT -p "$proto" --dport "$a:$b" -j ACCEPT 2>/dev/null || true
+        else
+            command -v ufw &>/dev/null && ufw delete allow "${a}:${b}/${proto}" >/dev/null 2>&1 || true
+            iptables -D INPUT -p "$proto" --dport "$a:$b" -j ACCEPT 2>/dev/null || true
+            ip6tables -D INPUT -p "$proto" --dport "$a:$b" -j ACCEPT 2>/dev/null || true
+        fi
     else
-        command -v ufw &>/dev/null && ufw delete allow "${p}/tcp" >/dev/null 2>&1 || true
-        iptables -D INPUT -p tcp --dport "$p" -j ACCEPT 2>/dev/null || true
-        ip6tables -D INPUT -p tcp --dport "$p" -j ACCEPT 2>/dev/null || true
+        if [[ "$act" == "open" ]]; then
+            command -v ufw &>/dev/null && ufw status 2>/dev/null | grep -q "active" && ufw allow "${p}/${proto}" >/dev/null 2>&1 || true
+            iptables -C INPUT -p "$proto" --dport "$p" -j ACCEPT 2>/dev/null || iptables -I INPUT -p "$proto" --dport "$p" -j ACCEPT 2>/dev/null || true
+            ip6tables -C INPUT -p "$proto" --dport "$p" -j ACCEPT 2>/dev/null || ip6tables -I INPUT -p "$proto" --dport "$p" -j ACCEPT 2>/dev/null || true
+        else
+            command -v ufw &>/dev/null && ufw delete allow "${p}/${proto}" >/dev/null 2>&1 || true
+            iptables -D INPUT -p "$proto" --dport "$p" -j ACCEPT 2>/dev/null || true
+            ip6tables -D INPUT -p "$proto" --dport "$p" -j ACCEPT 2>/dev/null || true
+        fi
     fi
 }
+
+# UDP 端口跳跃：范围 REDIRECT 到主端口
+manage_hop_redirect() {
+    local act="$1" main_p="$2" range="$3"
+    [[ -z "$main_p" || -z "$range" || "$range" != *-* ]] && return 0
+    local a="${range%-*}" b="${range#*-}"
+    if [[ "$act" == "open" ]]; then
+        iptables -t nat -C PREROUTING -p udp --dport "$a:$b" -j REDIRECT --to-ports "$main_p" 2>/dev/null \
+            || iptables -t nat -A PREROUTING -p udp --dport "$a:$b" -j REDIRECT --to-ports "$main_p" 2>/dev/null || true
+        ip6tables -t nat -C PREROUTING -p udp --dport "$a:$b" -j REDIRECT --to-ports "$main_p" 2>/dev/null \
+            || ip6tables -t nat -A PREROUTING -p udp --dport "$a:$b" -j REDIRECT --to-ports "$main_p" 2>/dev/null || true
+    else
+        iptables -t nat -D PREROUTING -p udp --dport "$a:$b" -j REDIRECT --to-ports "$main_p" 2>/dev/null || true
+        ip6tables -t nat -D PREROUTING -p udp --dport "$a:$b" -j REDIRECT --to-ports "$main_p" 2>/dev/null || true
+    fi
+}
+
 install_xray() {
     local arch="64"; [[ "$(uname -m)" =~ aarch64|arm64 ]] && arch="arm64-v8a"
     echo -e "${yellow}>>> 正在下载最新 Xray-core (linux-${arch})...${plain}"
@@ -78,7 +114,8 @@ install_xray() {
     /tmp/xray version >/dev/null 2>&1 || { rm -f /tmp/xray; echo -e "${red}❌ 内核校验失败！${plain}"; return 1; }
     mv -f /tmp/xray "$BIN_XRAY"
 }
-# 提取密钥对：取第二套（完整 ML-KEM-768 认证，长密钥）
+
+# 完整 ML-KEM-768（第二套长密钥）
 gen_vlessenc() {
     local raw
     raw=$("$BIN_XRAY" vlessenc 2>/dev/null) || return 1
@@ -86,6 +123,16 @@ gen_vlessenc() {
     enc=$(printf '%s\n' "$raw" | awk -F'"' '/"encryption"/{e=$4} END{print e}')
     [[ -n "$dec" && -n "$enc" && "$dec" == mlkem768* && "$enc" == mlkem768* ]] || return 1
     printf '%s\n%s\n' "$dec" "$enc"
+}
+
+gen_self_signed() {
+    local cn="${1:-aegis-x.local}"
+    openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -days 3650 -nodes \
+        -keyout "$KEY_FILE" -out "$CERT_FILE" -subj "/CN=${cn}" >/dev/null 2>&1 \
+        || openssl req -x509 -newkey rsa:2048 -days 3650 -nodes \
+        -keyout "$KEY_FILE" -out "$CERT_FILE" -subj "/CN=${cn}" >/dev/null 2>&1
+    chmod 600 "$KEY_FILE" "$CERT_FILE" 2>/dev/null
+    [[ -s "$CERT_FILE" && -s "$KEY_FILE" ]]
 }
 
 start_sub_server() {
@@ -109,7 +156,7 @@ EOF
     systemctl daemon-reload
     systemctl enable --now aegis-sub >/dev/null 2>&1
     systemctl restart aegis-sub
-    manage_port open "$port"
+    manage_port open "$port" tcp
 }
 
 stop_sub_server() {
@@ -117,22 +164,27 @@ stop_sub_server() {
     systemctl disable --now aegis-sub 2>/dev/null || true
     rm -f /etc/systemd/system/aegis-sub.service
     systemctl daemon-reload
-    [[ -n "$port" ]] && manage_port close "$port"
+    [[ -n "$port" ]] && manage_port close "$port" tcp
 }
 
 refresh_sub_file() {
     [[ -f "$META_FILE" ]] || return 0
     # shellcheck disable=SC1090
     source "$META_FILE"
-    local ip pe
+    local ip pe hop_q sni_host fa
     ip=$(curl -fsSL4 -m 3 icanhazip.com 2>/dev/null || curl -fsSL4 -m 3 ip.sb 2>/dev/null || echo "YOUR_IP")
     pe="${XHTTP_PATH//\//%2F}"
     : > "$SUB_FILE"
-    if [[ -n "${PORT:-}" ]]; then
+    if [[ "${ENABLE_TCP:-0}" == "1" && -n "${PORT:-}" ]]; then
         echo "vless://${UUID}@${ip}:${PORT}?encryption=${ENC_KEY}&flow=xtls-rprx-vision&security=none&type=xhttp&path=${pe}&mode=auto#vless-xhttp-tcp" >> "$SUB_FILE"
     fi
+    if [[ "${ENABLE_UDP:-0}" == "1" && -n "${UDP_PORT:-}" ]]; then
+        hop_q=""; [[ -n "${HOP_RANGE:-}" ]] && hop_q="&ports=${HOP_RANGE}"
+        sni_host="${UDP_SNI:-$ip}"
+        echo "vless://${UUID}@${ip}:${UDP_PORT}?encryption=${ENC_KEY}&flow=xtls-rprx-vision&security=tls&sni=${sni_host}&fp=chrome&alpn=h3&type=xhttp&path=${pe}&mode=auto${hop_q}#vless-xhttp-udp" >> "$SUB_FILE"
+    fi
     if systemctl is-active --quiet aegis-argo-fixed && [[ -n "${ARGO_FIXED_DOMAIN:-}" ]]; then
-        local fa="${CF_ADDR_FIXED:-www.visa.com.hk}"
+        fa="${CF_ADDR_FIXED:-www.visa.com.hk}"
         echo "vless://${UUID}@${fa}:443?encryption=${ENC_KEY}&flow=xtls-rprx-vision&security=tls&sni=${ARGO_FIXED_DOMAIN}&host=${ARGO_FIXED_DOMAIN}&alpn=h2&fp=chrome&type=xhttp&path=${pe}&mode=packet-up#vless-xhttp-argo" >> "$SUB_FILE"
     fi
     chmod 644 "$SUB_FILE"
@@ -141,35 +193,113 @@ refresh_sub_file() {
     fi
 }
 
-deploy_xhttp() {
-    local old_p="" f_dom="" f_addr="www.visa.com.hk"
-    # shellcheck disable=SC1090
-    [[ -f "$META_FILE" ]] && source "$META_FILE" && old_p="${PORT:-}" && f_dom="${ARGO_FIXED_DOMAIN:-}" && f_addr="${CF_ADDR_FIXED:-www.visa.com.hk}"
-    if systemctl is-active --quiet aegis-xray && [[ -n "$old_p" ]]; then
-        read -rp "⚠️ 节点已在运行 (端口: ${old_p})，确认重置配置？[y/N]: " rc
-        [[ "${rc//[[:space:]]/}" != [yY] ]] && return 0
-    fi
-    ensure_bbr
-    [[ ! -x "$BIN_XRAY" ]] && { install_xray || return 1; }
-    read -rp "👉 请输入监听端口 [1024-65535，回车随机]: " in_p
+pick_port() {
+    local hint="$1" old="${2:-}"
+    local in_p port=""
+    read -rp "👉 ${hint} [1024-65535，回车随机]: " in_p
     in_p="${in_p//[[:space:]]/}"
-    local port=""
-    if [[ "$in_p" =~ ^[0-9]+$ ]] && (( in_p >= 1024 && in_p <= 65535 )) && { [[ "$in_p" == "$old_p" ]] || ! ss -tulpn 2>/dev/null | grep -qE ":${in_p}\b"; }; then
+    if [[ "$in_p" =~ ^[0-9]+$ ]] && (( in_p >= 1024 && in_p <= 65535 )) && { [[ "$in_p" == "$old" ]] || ! ss -tulpn 2>/dev/null | grep -qE ":${in_p}\b"; }; then
         port="$in_p"
     else
-        [[ -n "$in_p" ]] && echo -e "${yellow}⚠️ 端口无效或已占用，自动切换随机端口...${plain}"
+        [[ -n "$in_p" ]] && echo -e "${yellow}⚠️ 端口无效或已占用，自动随机...${plain}"
         while true; do port=$(shuf -i 20000-58000 -n 1); ! ss -tulpn 2>/dev/null | grep -qE ":${port}\b" && break; done
     fi
-    local uuid path keys dec enc
+    echo "$port"
+}
+
+maybe_qr() {
+    local link="$1"
+    if [[ ${#link} -le 1200 ]]; then
+        echo "$link" | qrencode -t UTF8 -m 1 2>/dev/null || true
+    else
+        echo -e "${yellow}⚠️ 链接过长，跳过终端二维码（请用订阅）${plain}"
+    fi
+}
+
+deploy_xhttp() {
+    local old_p="" old_udp="" f_dom="" f_addr="www.visa.com.hk"
+    local old_hop="" old_sub_port="" old_sub_token=""
+    # shellcheck disable=SC1090
+    [[ -f "$META_FILE" ]] && source "$META_FILE" \
+        && old_p="${PORT:-}" && old_udp="${UDP_PORT:-}" \
+        && f_dom="${ARGO_FIXED_DOMAIN:-}" && f_addr="${CF_ADDR_FIXED:-www.visa.com.hk}" \
+        && old_hop="${HOP_RANGE:-}" && old_sub_port="${SUB_PORT:-}" && old_sub_token="${SUB_TOKEN:-}"
+
+    if systemctl is-active --quiet aegis-xray && [[ -n "${old_p}${old_udp}" ]]; then
+        read -rp "⚠️ 节点已在运行，确认重置配置？[y/N]: " rc
+        [[ "${rc//[[:space:]]/}" != [yY] ]] && return 0
+    fi
+
+    echo -e "\n${cyan}选择部署模式:${plain}"
+    echo -e "  ${cyan}1.${plain} 仅 TCP（直连 XHTTP）"
+    echo -e "  ${cyan}2.${plain} 仅 UDP（H3 + TLS + 端口跳跃）"
+    echo -e "  ${cyan}3.${plain} TCP + UDP 都开"
+    read -rp "👉 请选择 [1-3，回车=1]: " mode; mode="${mode:-1}"
+    mode="${mode//[[:space:]]/}"
+    [[ "$mode" =~ ^[123]$ ]] || mode=1
+
+    local enable_tcp=0 enable_udp=0
+    case "$mode" in
+        1) enable_tcp=1 ;;
+        2) enable_udp=1 ;;
+        3) enable_tcp=1; enable_udp=1 ;;
+    esac
+
+    ensure_bbr
+    [[ ! -x "$BIN_XRAY" ]] && { install_xray || return 1; }
+
+    local port="" udp_port="" hop_range="" uuid path keys dec enc
     uuid=$("$BIN_XRAY" uuid)
-    # 路径：UUID 前 12 位 + 4 位随机，降低可预测性
     path="/$(tr -d '-' <<<"$uuid" | cut -c1-16)"
     keys=$(gen_vlessenc) || { echo -e "${red}❌ 生成 ML-KEM-768 密钥失败！${plain}"; return 1; }
     dec=$(sed -n '1p' <<<"$keys")
     enc=$(sed -n '2p' <<<"$keys")
-    # VLESS Encryption + Vision：官方建议开启 flow
-    cat <<EOF > "${WORK_DIR}/config.test.json"
-{"log":{"loglevel":"warning"},"inbounds":[{"tag":"vless-xhttp-in","port":${port},"protocol":"vless","settings":{"clients":[{"id":"${uuid}","flow":"xtls-rprx-vision"}],"decryption":"${dec}"},"streamSettings":{"network":"xhttp","xhttpSettings":{"path":"${path}","mode":"auto"},"security":"none","sockopt":{"tcpFastOpen":true}},"sniffing":{"enabled":true,"destOverride":["http","tls","quic"],"routeOnly":true}}],"outbounds":[{"protocol":"freedom","tag":"direct"}]}
+
+    if [[ "$enable_tcp" -eq 1 ]]; then
+        port=$(pick_port "TCP 监听端口" "$old_p")
+    fi
+
+    if [[ "$enable_udp" -eq 1 ]]; then
+        echo -e "${cyan}UDP/H3 端口建议 443（更像正常 HTTPS），也可高位。${plain}"
+        udp_port=$(pick_port "UDP 监听端口" "$old_udp")
+        read -rp "👉 端口跳跃范围 [回车=默认约1000端口 / 如 40000-40999 / 0=关闭]: " hop_in
+        hop_in="${hop_in//[[:space:]]/}"
+        if [[ "$hop_in" == "0" ]]; then
+            hop_range=""
+        elif [[ "$hop_in" =~ ^[0-9]+-[0-9]+$ ]]; then
+            local ha="${hop_in%-*}" hb="${hop_in#*-}"
+            if (( hb > ha && (hb - ha) <= 5000 && ha >= 1024 && hb <= 65535 )); then
+                hop_range="$hop_in"
+            else
+                echo -e "${yellow}⚠️ 范围无效或过宽，改用默认${plain}"
+                hop_in=""
+            fi
+        fi
+        if [[ -z "${hop_in:-}" ]]; then
+            local start=$((udp_port)) end=$((udp_port + 999))
+            if (( end > 65535 )); then end=65535; start=$((end - 999)); fi
+            (( start < 1024 )) && start=1024
+            hop_range="${start}-${end}"
+        fi
+        if ! gen_self_signed "${ip:-aegis-x}.local"; then
+            gen_self_signed "aegis-x.local" || { echo -e "${red}❌ 自签证书失败！${plain}"; return 1; }
+        fi
+        echo -e "${green}✅ 自签证书已生成（客户端 SNI 填 IP 或任意域名，并允许不安全证书）${plain}"
+    fi
+
+    local inbounds="[" first=1
+    if [[ "$enable_tcp" -eq 1 ]]; then
+        first=0
+        inbounds+="{\"tag\":\"vless-xhttp-tcp\",\"port\":${port},\"protocol\":\"vless\",\"settings\":{\"clients\":[{\"id\":\"${uuid}\",\"flow\":\"xtls-rprx-vision\"}],\"decryption\":\"${dec}\"},\"streamSettings\":{\"network\":\"xhttp\",\"xhttpSettings\":{\"path\":\"${path}\",\"mode\":\"auto\"},\"security\":\"none\",\"sockopt\":{\"tcpFastOpen\":true}},\"sniffing\":{\"enabled\":true,\"destOverride\":[\"http\",\"tls\",\"quic\"],\"routeOnly\":true}}"
+    fi
+    if [[ "$enable_udp" -eq 1 ]]; then
+        [[ "$first" -eq 0 ]] && inbounds+=","
+        inbounds+="{\"tag\":\"vless-xhttp-udp\",\"port\":${udp_port},\"protocol\":\"vless\",\"settings\":{\"clients\":[{\"id\":\"${uuid}\",\"flow\":\"xtls-rprx-vision\"}],\"decryption\":\"${dec}\"},\"streamSettings\":{\"network\":\"xhttp\",\"security\":\"tls\",\"tlsSettings\":{\"certificates\":[{\"certificateFile\":\"${CERT_FILE}\",\"keyFile\":\"${KEY_FILE}\"}],\"alpn\":[\"h3\"]},\"xhttpSettings\":{\"path\":\"${path}\",\"mode\":\"auto\"}},\"sniffing\":{\"enabled\":true,\"destOverride\":[\"http\",\"tls\",\"quic\"],\"routeOnly\":true}}"
+    fi
+    inbounds+="]"
+
+    cat > "${WORK_DIR}/config.test.json" <<EOF
+{"log":{"loglevel":"warning"},"inbounds":${inbounds},"outbounds":[{"protocol":"freedom","tag":"direct"}]}
 EOF
     if command -v jq &>/dev/null; then
         jq . "${WORK_DIR}/config.test.json" > "${WORK_DIR}/config.test.json.pretty" \
@@ -183,7 +313,8 @@ EOF
     fi
     mv -f "${WORK_DIR}/config.test.json" "$CONF_FILE" && chmod 600 "$CONF_FILE"
     rm -f /tmp/ax_test.err
-    cat <<EOF > /etc/systemd/system/aegis-xray.service
+
+    cat > /etc/systemd/system/aegis-xray.service <<EOF
 [Unit]
 Description=Aegis-X Xray Service
 After=network.target
@@ -198,18 +329,40 @@ NoNewPrivileges=true
 WantedBy=multi-user.target
 EOF
     systemctl daemon-reload && systemctl enable --now aegis-xray >/dev/null 2>&1 && systemctl restart aegis-xray
-    [[ -n "$old_p" && "$old_p" != "$port" ]] && manage_port close "$old_p"
-    manage_port open "$port"
-    local sub_port="" sub_token=""
-    sub_token=$(head -c 16 /dev/urandom | od -An -tx1 | tr -d ' \n')
-    while true; do sub_port=$(shuf -i 18000-28000 -n 1); ! ss -tulpn 2>/dev/null | grep -qE ":${sub_port}\b" && break; done
+
+    # 清理旧规则
+    [[ -n "$old_p" && "$old_p" != "${port:-}" ]] && manage_port close "$old_p" tcp
+    [[ -n "$old_udp" ]] && manage_port close "$old_udp" udp
+    [[ -n "$old_hop" && -n "$old_udp" ]] && manage_hop_redirect close "$old_udp" "$old_hop" && manage_port close "$old_hop" udp
+
+    [[ -n "${port:-}" ]] && manage_port open "$port" tcp
+    if [[ -n "${udp_port:-}" ]]; then
+        manage_port open "$udp_port" udp
+        if [[ -n "$hop_range" ]]; then
+            manage_port open "$hop_range" udp
+            manage_hop_redirect open "$udp_port" "$hop_range"
+            echo -e "${green}✅ 端口跳跃: ${hop_range} → UDP ${udp_port}${plain}"
+        fi
+    fi
+
+    local sub_port="${old_sub_port:-}" sub_token="${old_sub_token:-}"
+    [[ -z "$sub_token" ]] && sub_token=$(head -c 16 /dev/urandom | od -An -tx1 | tr -d ' \n')
+    if [[ -z "$sub_port" ]]; then
+        while true; do sub_port=$(shuf -i 18000-28000 -n 1); ! ss -tulpn 2>/dev/null | grep -qE ":${sub_port}\b" && break; done
+    fi
     start_sub_server "$sub_port" "$sub_token"
-    cat <<EOF > "$META_FILE"
-PORT="${port}"
+
+    cat > "$META_FILE" <<EOF
+PORT="${port:-}"
+UDP_PORT="${udp_port:-}"
 UUID="${uuid}"
 XHTTP_PATH="${path}"
 ENC_KEY="${enc}"
 DEC_KEY="${dec}"
+ENABLE_TCP="${enable_tcp}"
+ENABLE_UDP="${enable_udp}"
+HOP_RANGE="${hop_range:-}"
+UDP_SNI=""
 ARGO_FIXED_DOMAIN="${f_dom}"
 CF_ADDR_FIXED="${f_addr}"
 SUB_PORT="${sub_port}"
@@ -217,11 +370,20 @@ SUB_TOKEN="${sub_token}"
 EOF
     chmod 600 "$META_FILE"
     refresh_sub_file
-    echo -e "${green}✅ VLESS-XHTTP 已启动 (端口: ${port})！${plain}"
+
+    echo -e "${green}✅ 部署完成！${plain}"
+    [[ "$enable_tcp" -eq 1 ]] && echo -e "   TCP: ${cyan}${port}${plain}"
+    [[ "$enable_udp" -eq 1 ]] && echo -e "   UDP: ${cyan}${udp_port}${plain}${hop_range:+  跳跃 ${hop_range}}"
     print_links
 }
+
 setup_argo() {
     [[ ! -f "$META_FILE" ]] && { echo -e "${red}❌ 请先按 [1] 部署节点！${plain}"; sleep 1.2; return 1; }
+    # shellcheck disable=SC1090
+    source "$META_FILE"
+    if [[ "${ENABLE_TCP:-0}" != "1" || -z "${PORT:-}" ]]; then
+        echo -e "${red}❌ Argo 需要 TCP 节点作回源，请先部署含 TCP 的模式${plain}"; sleep 1.5; return 1
+    fi
     if [[ ! -x "$BIN_ARGO" ]]; then
         echo -e "${yellow}>>> 正在下载 cloudflared (aegis-argo)...${plain}"
         local arch="amd64"; [[ "$(uname -m)" =~ aarch64|arm64 ]] && arch="arm64"
@@ -255,7 +417,7 @@ setup_argo() {
                 local dm; dm=$(clean_host "$rd")
                 [[ -z "$dm" || "$dm" != *.* ]] && { echo -e "${red}❌ 域名无效！${plain}"; sleep 1.5; continue; }
                 echo "ARGO_TOKEN=${tk}" > "$WORK_DIR/argo.env" && chmod 600 "$WORK_DIR/argo.env"
-                cat <<EOF > /etc/systemd/system/aegis-argo-fixed.service
+                cat > /etc/systemd/system/aegis-argo-fixed.service <<EOF
 [Unit]
 Description=Aegis-X Argo Fixed Tunnel
 After=network.target
@@ -276,10 +438,10 @@ EOF
                 sed -i "s|^ARGO_FIXED_DOMAIN=.*|ARGO_FIXED_DOMAIN=\"${dm}\"|" "$META_FILE"
                 echo -e "${green}✅ 固定隧道已激活: ${dm}${plain}"
                 echo -e "${yellow}请确认 Cloudflare Zero Trust Public Hostname 指向 → http://127.0.0.1:${PORT}${plain}"
-                print_links; read -rp "👉 按回车继续..." _ ;;
+                refresh_sub_file; print_links; read -rp "👉 按回车继续..." _ ;;
             2)
                 echo -e "\n  ${green}1.${plain} www.visa.com.hk  ${green}2.${plain} www.visa.com.sg  ${green}3.${plain} cloudflare-ech.com  ${green}4.${plain} www.wto.org  ${purple}5.${plain} 自定义  ${cyan}0.${plain} 返回"
-                read -rp "👉 请选择优选 [0-5, 回车默认 1]: " ac; ac="${ac//[[:space:]]/}"
+                read -rp "👉 请选择优选 [0-5，回车默认 1]: " ac; ac="${ac//[[:space:]]/}"
                 local nf="www.visa.com.hk"
                 case "${ac:-1}" in
                     0) continue ;;
@@ -289,52 +451,67 @@ EOF
                 esac
                 sed -i "s|^CF_ADDR_FIXED=.*|CF_ADDR_FIXED=\"${nf}\"|" "$META_FILE"
                 echo -e "${green}✅ 优选已更新为: ${nf}${plain}"
-                print_links; read -rp "👉 按回车继续..." _ ;;
+                refresh_sub_file; print_links; read -rp "👉 按回车继续..." _ ;;
             3)
                 systemctl disable --now aegis-argo-fixed 2>/dev/null || true
                 pkill -9 -f "$BIN_ARGO" 2>/dev/null || true
                 rm -f /etc/systemd/system/aegis-argo-fixed.service "$WORK_DIR/argo.env" && systemctl daemon-reload
                 sed -i 's|^ARGO_FIXED_DOMAIN=.*|ARGO_FIXED_DOMAIN=""|' "$META_FILE"
+                refresh_sub_file
                 echo -e "${green}✅ Argo 隧道已移除。${plain}"; sleep 1.2 ;;
             0) return 0 ;;
             *) echo -e "${red}❌ 非法输入！请输入 0-3！${plain}"; sleep 1 ;;
         esac
     done
 }
+
 print_links() {
     [[ ! -f "$META_FILE" ]] && { echo -e "${red}❌ 尚未部署节点！${plain}"; return 0; }
     # shellcheck disable=SC1090
     source "$META_FILE"
     refresh_sub_file
-    local ip; ip=$(curl -fsSL4 -m 3 icanhazip.com 2>/dev/null || curl -fsSL4 -m 3 ip.sb 2>/dev/null || echo "YOUR_IP")
-    local pe="${XHTTP_PATH//\//%2F}"
-    # 直连：security=none + flow
-    local dl="vless://${UUID}@${ip}:${PORT}?encryption=${ENC_KEY}&flow=xtls-rprx-vision&security=none&type=xhttp&path=${pe}&mode=auto#vless-xhttp"
+    local ip pe hop_q sni_host fa dl ul fl
+    ip=$(curl -fsSL4 -m 3 icanhazip.com 2>/dev/null || curl -fsSL4 -m 3 ip.sb 2>/dev/null || echo "YOUR_IP")
+    pe="${XHTTP_PATH//\//%2F}"
+
     echo -e "\n${cyan}================ [ 🖨️ VLESS-XHTTP 节点提取中心 ] =================${plain}"
-    echo -e "\n${purple}【 1. VLESS-XHTTP 直连 | 端口: ${PORT} 】${plain}\n${yellow}${dl}${plain}\n"
-    if [[ ${#dl} -le 1200 ]]; then echo "$dl" | qrencode -t UTF8 -m 1 2>/dev/null || true; else echo -e "${yellow}⚠️ 链接过长，跳过终端二维码（请用订阅）${plain}"; fi
-    if systemctl is-active --quiet aegis-argo-fixed && [[ -n "${ARGO_FIXED_DOMAIN:-}" ]]; then
-        local fa="${CF_ADDR_FIXED:-www.visa.com.hk}"
-        # Argo：security=tls + flow，mode=packet-up（过 CDN 兼容性最好）
-        local fl="vless://${UUID}@${fa}:443?encryption=${ENC_KEY}&flow=xtls-rprx-vision&security=tls&sni=${ARGO_FIXED_DOMAIN}&host=${ARGO_FIXED_DOMAIN}&alpn=h2&fp=chrome&type=xhttp&path=${pe}&mode=packet-up#vless-xhttp-argo"
-        echo -e "\n${purple}【 2. VLESS-XHTTP-Argo | 优选: ${fa} | SNI: ${ARGO_FIXED_DOMAIN} 】${plain}\n${purple}${fl}${plain}\n"
-        if [[ ${#fl} -le 1200 ]]; then echo "$fl" | qrencode -t UTF8 -m 1 2>/dev/null || true; else echo -e "${yellow}⚠️ 链接过长，跳过终端二维码（请用订阅）${plain}"; fi
+
+    if [[ "${ENABLE_TCP:-0}" == "1" && -n "${PORT:-}" ]]; then
+        dl="vless://${UUID}@${ip}:${PORT}?encryption=${ENC_KEY}&flow=xtls-rprx-vision&security=none&type=xhttp&path=${pe}&mode=auto#vless-xhttp-tcp"
+        echo -e "\n${purple}【 TCP 直连 | 端口: ${PORT} 】${plain}\n${yellow}${dl}${plain}\n"
+        maybe_qr "$dl"
     fi
+
+    if [[ "${ENABLE_UDP:-0}" == "1" && -n "${UDP_PORT:-}" ]]; then
+        hop_q=""; [[ -n "${HOP_RANGE:-}" ]] && hop_q="&ports=${HOP_RANGE}"
+        sni_host="${UDP_SNI:-$ip}"
+        ul="vless://${UUID}@${ip}:${UDP_PORT}?encryption=${ENC_KEY}&flow=xtls-rprx-vision&security=tls&sni=${sni_host}&fp=chrome&alpn=h3&type=xhttp&path=${pe}&mode=auto${hop_q}#vless-xhttp-udp"
+        echo -e "\n${purple}【 UDP H3 | 端口: ${UDP_PORT}${HOP_RANGE:+ | 跳跃: ${HOP_RANGE}} 】${plain}\n${yellow}${ul}${plain}\n"
+        echo -e "${yellow}   客户端需允许自签证书 / allowInsecure${plain}"
+        maybe_qr "$ul"
+    fi
+
+    if systemctl is-active --quiet aegis-argo-fixed && [[ -n "${ARGO_FIXED_DOMAIN:-}" ]]; then
+        fa="${CF_ADDR_FIXED:-www.visa.com.hk}"
+        fl="vless://${UUID}@${fa}:443?encryption=${ENC_KEY}&flow=xtls-rprx-vision&security=tls&sni=${ARGO_FIXED_DOMAIN}&host=${ARGO_FIXED_DOMAIN}&alpn=h2&fp=chrome&type=xhttp&path=${pe}&mode=packet-up#vless-xhttp-argo"
+        echo -e "\n${purple}【 Argo | 优选: ${fa} | SNI: ${ARGO_FIXED_DOMAIN} 】${plain}\n${purple}${fl}${plain}\n"
+        maybe_qr "$fl"
+    fi
+
     echo -e "\n${cyan}----------------------------------------------------------------------${plain}"
     if [[ -n "${SUB_PORT:-}" && -n "${SUB_TOKEN:-}" ]]; then
-        local sub_url="http://${ip}:${SUB_PORT}/${SUB_TOKEN}"
-        echo -e "${green}>>> 订阅链接（客户端添加此 URL，之后只需「更新订阅」）：${plain}"
-        echo -e "${blue}${sub_url}${plain}"
-        echo -e "${yellow}    返回内容为每行一条 vless:// ；若客户端要 Base64 用下方备用串${plain}"
+        echo -e "${green}>>> 订阅链接（添加后只需「更新订阅」）：${plain}"
+        echo -e "${blue}http://${ip}:${SUB_PORT}/${SUB_TOKEN}${plain}"
+        echo -e "${yellow}    内容为每行一条 vless:// ；要 Base64 用下方备用串${plain}"
     fi
-    echo -e "\n${yellow}>>> 备用：聚合 Base64（可手动粘贴导入）：${plain}"
+    echo -e "\n${yellow}>>> 备用：聚合 Base64：${plain}"
     if [[ -s "$SUB_FILE" ]]; then
         echo -e "${blue}$(base64 -w 0 < "$SUB_FILE" 2>/dev/null || base64 < "$SUB_FILE" | tr -d '\n')${plain}\n"
     fi
 }
+
 update_cores() {
-    local need_exec=0 r_ver="" 
-    # 1. 先准备脚本（有更新先落到磁盘，先不 exec）
+    local need_exec=0 r_ver=""
     if curl -fsSL -m 5 "$SCRIPT_URL" -o /tmp/ax_new.sh 2>/dev/null && bash -n /tmp/ax_new.sh 2>/dev/null; then
         r_ver=$(grep -E '^ax_VERSION=' /tmp/ax_new.sh | head -n1 | cut -d'"' -f2)
         if ! cmp -s /tmp/ax_new.sh "$WORK_DIR/ax.sh" 2>/dev/null; then
@@ -350,7 +527,6 @@ update_cores() {
         echo -e "${yellow}⚠️ 无法拉取远程脚本，跳过面板更新${plain}"
         rm -f /tmp/ax_new.sh
     fi
-    # 2. 再更新 Xray（同一次按 5 里完成）
     local lv="未安装" rv=""
     [[ -x "$BIN_XRAY" ]] && lv=$("$BIN_XRAY" version 2>/dev/null | head -n1 | awk '{print $2}')
     rv=$(curl -fsSL -m 5 "https://api.github.com/repos/XTLS/Xray-core/releases/latest" 2>/dev/null | jq -r '.tag_name // empty' | sed 's/^v//')
@@ -362,7 +538,6 @@ update_cores() {
     else
         install_xray && systemctl restart aegis-xray 2>/dev/null && echo -e "${green}✅ 内核更新完毕！${plain}"
     fi
-    # 3. 脚本有更新才重启界面；否则直接回菜单
     if [[ "$need_exec" -eq 1 ]]; then
         echo -e "${green}正在重启界面...${plain}"
         sleep 1
@@ -370,28 +545,40 @@ update_cores() {
     fi
     sleep 1
 }
+
 inspect_logs() {
     echo -e "\n${cyan}=== [1. 进程与端口监听] ===${plain}"
-    ps -ef | grep -E "[a]egis-xray|[a]egis-argo" || echo -e "${red}无运行进程${plain}"
+    ps -ef | grep -E "[a]egis-xray|[a]egis-argo|[a]egis-sub" || echo -e "${red}无运行进程${plain}"
     echo -e "\n${cyan}=== [2. Xray 最近 10 条日志] ===${plain}"
     journalctl -u aegis-xray -n 10 --no-pager || true
-    systemctl is-active --quiet aegis-argo-fixed && echo -e "\n${cyan}=== [3. Argo 最近 10 条日志] ===${plain}" && journalctl -u aegis-argo-fixed -n 10 --no-pager || true
+    systemctl is-active --quiet aegis-argo-fixed && echo -e "\n${cyan}=== [3. Argo] ===${plain}" && journalctl -u aegis-argo-fixed -n 10 --no-pager || true
+    systemctl is-active --quiet aegis-sub && echo -e "\n${cyan}=== [4. 订阅服务] ===${plain}" && systemctl status aegis-sub --no-pager -l | head -n 12 || true
 }
+
 nuke_all() {
     echo -e "\n${yellow}⚠️ 确认彻底卸载 Aegis-X (ax)？(不影响 BBR 与其他服务)${plain}"
     read -rp "👉 确认卸载？[y/N]: " cf
     [[ "${cf//[[:space:]]/}" != [yY] ]] && return 0
     # shellcheck disable=SC1090
-    [[ -f "$META_FILE" ]] && source "$META_FILE" && manage_port close "${PORT:-}"
-    [[ -f "$META_FILE" ]] && source "$META_FILE" 2>/dev/null && stop_sub_server "${SUB_PORT:-}"
+    if [[ -f "$META_FILE" ]]; then
+        source "$META_FILE"
+        manage_port close "${PORT:-}" tcp
+        manage_port close "${UDP_PORT:-}" udp
+        [[ -n "${HOP_RANGE:-}" && -n "${UDP_PORT:-}" ]] && manage_hop_redirect close "$UDP_PORT" "$HOP_RANGE" && manage_port close "$HOP_RANGE" udp
+        stop_sub_server "${SUB_PORT:-}"
+    fi
     for s in aegis-xray aegis-argo aegis-argo-temp aegis-argo-fixed aegis-sub; do
-        systemctl stop "$s" 2>/dev/null || true; systemctl disable "$s" 2>/dev/null || true; rm -f "/etc/systemd/system/${s}.service"
+        systemctl stop "$s" 2>/dev/null || true
+        systemctl disable "$s" 2>/dev/null || true
+        rm -f "/etc/systemd/system/${s}.service"
     done
     systemctl daemon-reload
-    pkill -9 -f "$BIN_XRAY" 2>/dev/null || true; pkill -9 -f "$BIN_ARGO" 2>/dev/null || true
+    pkill -9 -f "$BIN_XRAY" 2>/dev/null || true
+    pkill -9 -f "$BIN_ARGO" 2>/dev/null || true
     rm -rf "$WORK_DIR" "$BIN_XRAY" "$BIN_ARGO" "$SHORTCUT" /tmp/ax_*
     echo -e "${green}✅ ax 已彻底无痕卸载！${plain}"; exit 0
 }
+
 env_guard
 UPDATE_CHECKED=0
 update_tip="${green}✅ ax 已是最新版 (v${ax_VERSION})${plain}"
@@ -401,13 +588,11 @@ while true; do
     [[ -x "$BIN_XRAY" ]] && ver_x=$("$BIN_XRAY" version 2>/dev/null | head -n1 | awk '{print $2}')
     systemctl is-active --quiet aegis-xray && st_x="${green}运行中 ✅${plain}"
     # shellcheck disable=SC1090
-    [[ -f "$META_FILE" ]] && source "$META_FILE" && p_info="${PORT:-'-----'}"
+    [[ -f "$META_FILE" ]] && source "$META_FILE" && p_info="${PORT:-${UDP_PORT:------}}"
     systemctl is-active --quiet aegis-argo-fixed && st_a="${green}已连接 ✅${plain} ${purple}[${ARGO_FIXED_DOMAIN:-ZeroTrust}]${plain}"
-   
-    update_tip="${green}✅ ax 已是最新版 (v${ax_VERSION})${plain}"
-       if [[ "$UPDATE_CHECKED" -eq 0 ]]; then
+
+    if [[ "$UPDATE_CHECKED" -eq 0 ]]; then
         update_tip="${green}✅ ax 已是最新版 (v${ax_VERSION})${plain}"
-        # 脚本
         if curl -fsSL -m 3 "$SCRIPT_URL" -o /tmp/ax_check.sh 2>/dev/null; then
             r_ver=$(grep -E '^ax_VERSION=' /tmp/ax_check.sh 2>/dev/null | head -n1 | cut -d'"' -f2)
             if ! cmp -s /tmp/ax_check.sh "$WORK_DIR/ax.sh" 2>/dev/null; then
@@ -415,7 +600,6 @@ while true; do
             fi
             rm -f /tmp/ax_check.sh
         fi
-        # Xray
         local_lv="未安装"
         [[ -x "$BIN_XRAY" ]] && local_lv=$("$BIN_XRAY" version 2>/dev/null | head -n1 | awk '{print $2}')
         remote_lv=$(curl -fsSL -m 3 "https://api.github.com/repos/XTLS/Xray-core/releases/latest" 2>/dev/null | jq -r '.tag_name // empty' | sed 's/^v//')
@@ -428,7 +612,7 @@ while true; do
         fi
         UPDATE_CHECKED=1
     fi
- 
+
     clear
     echo -e "${cyan}██╗   ██╗███████╗██╗      ██████╗ ██╗  ██╗${plain}"
     echo -e "${cyan}██║   ██║██╔════╝██║     ██╔═══██╗╚██╗██╔╝${plain}"
@@ -448,11 +632,11 @@ while true; do
     echo -e "⚙️  ${yellow}核心状态:${plain} Xray ${cyan}v${ver_x}${plain} | 端口: ${cyan}${p_info}${plain} | 加速: $(get_bbr_stat)"
     echo -e "📡  ${yellow}运行状态:${plain} Xray: ${st_x}  | Argo: ${st_a}"
     echo -e "${cyan}----------------------------------------------------------------------${plain}"
-    echo -e "  ${cyan}1.${plain} ➕ 部署/重置 VLESS-XHTTP            ${green}[ML-KEM-768 抗量子✨]${plain}"
+    echo -e "  ${cyan}1.${plain} ➕ 部署/重置 VLESS-XHTTP            ${green}[TCP/UDP/双开 · 完整ML-KEM]${plain}"
     echo -e "  ${cyan}2.${plain} ☁️ 挂载 Zero Trust 固定隧道         ${purple}[CDN 优选防封复活甲🛡️]${plain}"
-    echo -e "  ${cyan}3.${plain} 🖨️ ${cyan}一键提取节点与订阅链接${plain}             ${green}[HTTP订阅 + 可选二维码]${plain}"
+    echo -e "  ${cyan}3.${plain} 🖨️ ${cyan}一键提取节点与订阅链接${plain}           ${green}[HTTP订阅 · 可选二维码]${plain}"
     echo -e "  ${cyan}4.${plain} 📋 查看服务状态与运行日志           ${yellow}[进程/端口/连接诊断]${plain}"
-    echo -e "  ${cyan}5.${plain} 🔄 检查并更新 Xray-core 内核        ${blue}[版本比对与语法预检]${plain}"
+    echo -e "  ${cyan}5.${plain} 🔄 检查并更新脚本与 Xray 内核       ${blue}[版本比对与语法预检]${plain}"
     echo -e "${cyan}----------------------------------------------------------------------${plain}"
     echo -e "  ${cyan}9.${plain} 🗑️ ${red}彻底粉碎卸载 (零误伤其他服务)${plain}    |  ${cyan}0.${plain} 🔙 ${cyan}退出终端 (快捷键: ax)${plain}"
     echo -e "${cyan}======================================================================${plain}"
