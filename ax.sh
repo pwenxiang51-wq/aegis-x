@@ -2,7 +2,7 @@
 export LANG=en_US.UTF-8
 set -uo pipefail
 red='\033[0;31m'; green='\033[0;32m'; yellow='\033[0;33m'; cyan='\033[0;36m'; blue='\033[0;94m'; purple='\033[1;35m'; plain='\033[0m'
-ax_VERSION="1.1.3"
+ax_VERSION="1.1.4"
 SCRIPT_URL="https://raw.githubusercontent.com/pwenxiang51-wq/aegis-x/main/ax.sh"
 WORK_DIR="/etc/aegis-x"
 BIN_XRAY="/usr/local/bin/aegis-xray"
@@ -128,9 +128,11 @@ gen_vlessenc() {
 gen_self_signed() {
     local cn="${1:-aegis-x.local}"
     openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -days 3650 -nodes \
-        -keyout "$KEY_FILE" -out "$CERT_FILE" -subj "/CN=${cn}" >/dev/null 2>&1 \
+        -keyout "$KEY_FILE" -out "$CERT_FILE" -subj "/CN=${cn}" \
+        -addext "subjectAltName=DNS:${cn}" >/dev/null 2>&1 \
         || openssl req -x509 -newkey rsa:2048 -days 3650 -nodes \
-        -keyout "$KEY_FILE" -out "$CERT_FILE" -subj "/CN=${cn}" >/dev/null 2>&1
+        -keyout "$KEY_FILE" -out "$CERT_FILE" -subj "/CN=${cn}" \
+        -addext "subjectAltName=DNS:${cn}" >/dev/null 2>&1
     chmod 600 "$KEY_FILE" "$CERT_FILE" 2>/dev/null
     [[ -s "$CERT_FILE" && -s "$KEY_FILE" ]]
 }
@@ -146,7 +148,8 @@ install_acme() {
         return 0
     fi
     echo -e "${yellow}>>> 安装 acme.sh ...${plain}"
-    curl -fsSL https://get.acme.sh | sh -s email="ax@$(hostname -f 2>/dev/null || echo aegis.local)" || return 1
+    # 邮箱必须带点：主机名 racknerd-c1a129d 无点，LE 会拒 ax@racknerd-c1a129d
+    curl -fsSL https://get.acme.sh | sh -s email="ax@aegis-x.local" || return 1
     [[ -x "$HOME/.acme.sh/acme.sh" ]] || return 1
 }
 
@@ -303,8 +306,13 @@ deploy_xhttp() {
     echo -e "  ${cyan}1.${plain} 仅 TCP（直连 XHTTP）"
     echo -e "  ${cyan}2.${plain} 仅 UDP（H3 + TLS + 端口跳跃）"
     echo -e "  ${cyan}3.${plain} TCP + UDP 都开"
-    read -rp "👉 请选择 [1-3，回车=1]: " mode; mode="${mode:-1}"
+    echo -e "  ${cyan}0.${plain} 返回主菜单"
+    read -rp "👉 请选择 [0-3，回车=1]: " mode; mode="${mode:-1}"
     mode="${mode//[[:space:]]/}"
+    if [[ "$mode" == "0" ]]; then
+        echo -e "${yellow}已取消部署，返回主菜单。${plain}"
+        return 0
+    fi
     [[ "$mode" =~ ^[123]$ ]] || mode=1
 
     local enable_tcp=0 enable_udp=0
