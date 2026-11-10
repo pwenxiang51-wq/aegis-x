@@ -13,9 +13,9 @@ bash <(curl -fsSL https://raw.githubusercontent.com/pwenxiang51-wq/aegis-x/main/
 ## ⚡ 核心架构
 
 * **直连 TCP**：`VLESS` + `XHTTP` + `XTLS-Vision` + `ML-KEM-768`
-* **直连 UDP/H3**：`VLESS` + `XHTTP/3 (QUIC)` + `ML-KEM-768` + 端口跳跃，证书只能用 Let's Encrypt 真证书（sslip.io + LE 或自有域名 + LE；自签不通，已拿掉）
+* **直连 UDP/H3**：`VLESS` + `XHTTP/3 (QUIC)` + `ML-KEM-768` + 端口跳跃 + force-brutal 拥塞控制，证书只能用 Let's Encrypt 真证书（sslip.io + LE 或自有域名 + LE；自签不通，已拿掉）
 * **固定隧道**：`VLESS` + `XHTTP (packet-up)` + `Cloudflare Tunnels (HTTP/2)`
-* **订阅**：菜单 `3` 一键提取节点与聚合订阅链接
+* **订阅**：菜单 `3` 一键提取节点与聚合订阅链接（UDP 部署时为 HTTPS 订阅）
 * **卸载**：菜单 `9` 彻底清除（含 acme.sh 与续签 cron）
 
 ## 🔗 链接
