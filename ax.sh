@@ -2,7 +2,7 @@
 export LANG=en_US.UTF-8
 set -uo pipefail
 red='\033[0;31m'; green='\033[0;32m'; yellow='\033[0;33m'; cyan='\033[0;36m'; blue='\033[0;94m'; purple='\033[1;35m'; plain='\033[0m'
-ax_VERSION="1.1.9"
+ax_VERSION="1.1.10"
 SCRIPT_URL="https://raw.githubusercontent.com/pwenxiang51-wq/aegis-x/main/ax.sh"
 WORK_DIR="/etc/aegis-x"
 BIN_XRAY="/usr/local/bin/aegis-xray"
@@ -271,7 +271,7 @@ refresh_sub_file() {
         hop_q=""; [[ -n "${HOP_RANGE:-}" ]] && hop_q="&mport=${HOP_RANGE}"
         sni_host="${UDP_SNI:-aegis-x.local}"
         insecure_q=""; [[ "${ALLOW_INSECURE:-1}" == "1" ]] && insecure_q="&allowInsecure=1"
-        echo "vless://${UUID}@${ip}:${UDP_PORT}?encryption=${ENC_KEY}&security=tls&sni=${sni_host}&fp=chrome&alpn=h3&type=xhttp&path=${pe}&mode=stream-one&fm=1${insecure_q}${hop_q}#vless-xhttp-udp" >> "$SUB_FILE"
+        echo "vless://${UUID}@${ip}:${UDP_PORT}?encryption=${ENC_KEY}&security=tls&sni=${sni_host}&fp=chrome&alpn=h3&type=xhttp&path=${pe}&mode=stream-one&fm=%7B%22quicParams%22%3A%7B%22congestion%22%3A%22force-brutal%22%2C%22brutalUp%22%3A%22100%20mbps%22%7D%7D${insecure_q}${hop_q}#vless-xhttp-udp" >> "$SUB_FILE"
     fi
     if systemctl is-active --quiet aegis-argo-fixed && [[ -n "${ARGO_FIXED_DOMAIN:-}" ]]; then
         fa="${CF_ADDR_FIXED:-www.visa.com.hk}"
@@ -434,7 +434,7 @@ deploy_xhttp() {
     fi
     if [[ "$enable_udp" -eq 1 ]]; then
         [[ "$first" -eq 0 ]] && inbounds+=","
-        inbounds+="{\"tag\":\"vless-xhttp-udp\",\"port\":${udp_port},\"protocol\":\"vless\",\"settings\":{\"clients\":[{\"id\":\"${uuid}\"}],\"decryption\":\"${dec}\"},\"streamSettings\":{\"network\":\"xhttp\",\"security\":\"tls\",\"tlsSettings\":{\"certificates\":[{\"certificateFile\":\"${CERT_FILE}\",\"keyFile\":\"${KEY_FILE}\"}],\"alpn\":[\"h3\"]},\"xhttpSettings\":{\"path\":\"${path}\",\"mode\":\"stream-one\"}},\"sniffing\":{\"enabled\":true,\"destOverride\":[\"http\",\"tls\",\"quic\"],\"routeOnly\":true}}"
+        inbounds+="{\"tag\":\"vless-xhttp-udp\",\"port\":${udp_port},\"protocol\":\"vless\",\"settings\":{\"clients\":[{\"id\":\"${uuid}\"}],\"decryption\":\"${dec}\"},\"streamSettings\":{\"network\":\"xhttp\",\"security\":\"tls\",\"tlsSettings\":{\"certificates\":[{\"certificateFile\":\"${CERT_FILE}\",\"keyFile\":\"${KEY_FILE}\"}],\"alpn\":[\"h3\"]},\"xhttpSettings\":{\"path\":\"${path}\",\"mode\":\"stream-one\"},\"finalmask\":{\"quicParams\":{\"congestion\":\"force-brutal\",\"brutalUp\":\"100 mbps\"}}},\"sniffing\":{\"enabled\":true,\"destOverride\":[\"http\",\"tls\",\"quic\"],\"routeOnly\":true}}"
     fi
     inbounds+="]"
 
@@ -637,9 +637,9 @@ print_links() {
         hop_q=""; [[ -n "${HOP_RANGE:-}" ]] && hop_q="&mport=${HOP_RANGE}"
         sni_host="${UDP_SNI:-aegis-x.local}"
         insecure_q=""; [[ "${ALLOW_INSECURE:-1}" == "1" ]] && insecure_q="&allowInsecure=1"
-        ul="vless://${UUID}@${ip}:${UDP_PORT}?encryption=${ENC_KEY}&security=tls&sni=${sni_host}&fp=chrome&alpn=h3&type=xhttp&path=${pe}&mode=stream-one&fm=1${insecure_q}${hop_q}#vless-xhttp-udp"
+        ul="vless://${UUID}@${ip}:${UDP_PORT}?encryption=${ENC_KEY}&security=tls&sni=${sni_host}&fp=chrome&alpn=h3&type=xhttp&path=${pe}&mode=stream-one&fm=%7B%22quicParams%22%3A%7B%22congestion%22%3A%22force-brutal%22%2C%22brutalUp%22%3A%22100%20mbps%22%7D%7D${insecure_q}${hop_q}#vless-xhttp-udp"
         echo -e "\n${purple}【 UDP H3 | 端口: ${UDP_PORT}${HOP_RANGE:+ | 跳跃: ${HOP_RANGE}} | 证书: ${CERT_MODE:-acme} 】${plain}\n${yellow}${ul}${plain}\n"
-        echo -e "${yellow}   SNI=${sni_host} · mode=stream-one · fm=1 · 无 Vision${insecure_q:+ · allowInsecure}${plain}"
+        echo -e "${yellow}   SNI=${sni_host} · mode=stream-one · force-brutal · 无 Vision${insecure_q:+ · allowInsecure}${plain}"
         maybe_qr "$ul"
     fi
 
