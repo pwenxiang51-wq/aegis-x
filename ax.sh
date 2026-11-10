@@ -2,7 +2,7 @@
 export LANG=en_US.UTF-8
 set -uo pipefail
 red='\033[0;31m'; green='\033[0;32m'; yellow='\033[0;33m'; cyan='\033[0;36m'; blue='\033[0;94m'; purple='\033[1;35m'; plain='\033[0m'
-ax_VERSION="1.1.6"
+ax_VERSION="1.1.7"
 SCRIPT_URL="https://raw.githubusercontent.com/pwenxiang51-wq/aegis-x/main/ax.sh"
 WORK_DIR="/etc/aegis-x"
 BIN_XRAY="/usr/local/bin/aegis-xray"
@@ -125,18 +125,6 @@ gen_vlessenc() {
     printf '%s\n%s\n' "$dec" "$enc"
 }
 
-gen_self_signed() {
-    local cn="${1:-aegis-x.local}"
-    openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -days 3650 -nodes \
-        -keyout "$KEY_FILE" -out "$CERT_FILE" -subj "/CN=${cn}" \
-        -addext "subjectAltName=DNS:${cn}" >/dev/null 2>&1 \
-        || openssl req -x509 -newkey rsa:2048 -days 3650 -nodes \
-        -keyout "$KEY_FILE" -out "$CERT_FILE" -subj "/CN=${cn}" \
-        -addext "subjectAltName=DNS:${cn}" >/dev/null 2>&1
-    chmod 600 "$KEY_FILE" "$CERT_FILE" 2>/dev/null
-    [[ -s "$CERT_FILE" && -s "$KEY_FILE" ]]
-}
-
 # IP → sslip.io 域名：1.2.3.4 → 1-2-3-4.sslip.io
 ip_to_sslip() {
     local ip="$1"
@@ -161,7 +149,7 @@ issue_acme() {
     install_acme || { echo -e "${red}❌ acme.sh 安装失败${plain}"; return 1; }
     # 80 被占用则无法 standalone
     if ss -tlnp 2>/dev/null | grep -qE ':80\b'; then
-        echo -e "${red}❌ 80 端口被占用，无法 HTTP-01 申请证书。请先停掉占用 80 的服务，或改用自签。${plain}"
+        echo -e "${red}❌ 80 端口被占用，无法 HTTP-01 申请证书。请先停掉占用 80 的服务。${plain}"
         return 1
     fi
     echo -e "${yellow}>>> 正在为 ${domain} 申请 Let's Encrypt 证书（standalone）...${plain}"
@@ -332,7 +320,7 @@ deploy_xhttp() {
     [[ ! -x "$BIN_XRAY" ]] && { install_xray || return 1; }
 
     local port="" udp_port="" hop_range="" uuid path keys dec enc
-    local UDP_SNI_VAL="" CERT_MODE_VAL="self" ALLOW_INSECURE_VAL="1"
+    local UDP_SNI_VAL="" CERT_MODE_VAL="acme" ALLOW_INSECURE_VAL="0"
     uuid=$("$BIN_XRAY" uuid)
     path="/$(tr -d '-' <<<"$uuid" | cut -c1-16)"
     keys=$(gen_vlessenc) || { echo -e "${red}❌ 生成 ML-KEM-768 密钥失败！${plain}"; return 1; }
@@ -365,11 +353,10 @@ deploy_xhttp() {
             (( start < 1024 )) && start=1024
             hop_range="${start}-${end}"
         fi
-        echo -e "\n${cyan}UDP TLS 证书:${plain}"
+        echo -e "\n${cyan}UDP TLS 证书（H3 必须真证书，自签不通）:${plain}"
         echo -e "  ${cyan}1.${plain} sslip.io + Let's Encrypt 真证书（推荐，无需改 DNS）"
         echo -e "  ${cyan}2.${plain} 自有域名 + Let's Encrypt（需域名已解析到本机）"
-        echo -e "  ${cyan}3.${plain} 自签证书（仅测试，部分客户端 H3 可能不通）"
-        read -rp "👉 请选择 [1-3，回车=1]: " cm; cm="${cm:-1}"; cm="${cm//[[:space:]]/}"
+        read -rp "👉 请选择 [1-2，回车=1]: " cm; cm="${cm:-1}"; cm="${cm//[[:space:]]/}"
         local pub_ip cert_ok=0
         pub_ip=$(curl -fsSL4 -m 3 icanhazip.com 2>/dev/null || curl -fsSL4 -m 3 ip.sb 2>/dev/null || true)
         case "$cm" in
@@ -382,10 +369,9 @@ deploy_xhttp() {
                     ALLOW_INSECURE_VAL="0"
                     cert_ok=1
                 else
-                    echo -e "${yellow}⚠️ ACME 失败，回退自签${plain}"
+                    echo -e "${red}❌ ACME 失败，部署中止（H3 必须真证书，自签不通）${plain}"; return 1
                 fi
                 ;;
-            3) ;;
             *)
                 if [[ -n "$pub_ip" ]]; then
                     local sslip; sslip=$(ip_to_sslip "$pub_ip")
@@ -396,21 +382,15 @@ deploy_xhttp() {
                         ALLOW_INSECURE_VAL="0"
                         cert_ok=1
                     else
-                        echo -e "${yellow}⚠️ ACME 失败，回退自签${plain}"
+                        echo -e "${red}❌ ACME 失败，部署中止（H3 必须真证书，自签不通）${plain}"; return 1
                     fi
                 else
-                    echo -e "${yellow}⚠️ 无法获取公网 IP，回退自签${plain}"
+                    echo -e "${red}❌ 无法获取公网 IP，部署中止${plain}"; return 1
                 fi
                 ;;
         esac
         if [[ "$cert_ok" -ne 1 ]]; then
-            if ! gen_self_signed "aegis-x.local"; then
-                echo -e "${red}❌ 自签证书失败！${plain}"; return 1
-            fi
-            UDP_SNI_VAL="aegis-x.local"
-            CERT_MODE_VAL="self"
-            ALLOW_INSECURE_VAL="1"
-            echo -e "${green}✅ 自签证书 CN=aegis-x.local（链接将带 allowInsecure=1）${plain}"
+            echo -e "${red}❌ 证书申请失败，部署中止${plain}"; return 1
         fi
     fi
 
@@ -490,7 +470,7 @@ ENABLE_TCP="${enable_tcp}"
 ENABLE_UDP="${enable_udp}"
 HOP_RANGE="${hop_range:-}"
 UDP_SNI="${UDP_SNI_VAL:-aegis-x.local}"
-CERT_MODE="${CERT_MODE_VAL:-self}"
+CERT_MODE="${CERT_MODE_VAL:-acme}"
 ALLOW_INSECURE="${ALLOW_INSECURE_VAL:-1}"
 ARGO_FIXED_DOMAIN="${f_dom}"
 CF_ADDR_FIXED="${f_addr}"
@@ -620,7 +600,7 @@ print_links() {
         sni_host="${UDP_SNI:-aegis-x.local}"
         insecure_q=""; [[ "${ALLOW_INSECURE:-1}" == "1" ]] && insecure_q="&allowInsecure=1"
         ul="vless://${UUID}@${ip}:${UDP_PORT}?encryption=${ENC_KEY}&security=tls&sni=${sni_host}&fp=chrome&alpn=h3&type=xhttp&path=${pe}&mode=stream-one${insecure_q}${hop_q}#vless-xhttp-udp"
-        echo -e "\n${purple}【 UDP H3 | 端口: ${UDP_PORT}${HOP_RANGE:+ | 跳跃: ${HOP_RANGE}} | 证书: ${CERT_MODE:-self} 】${plain}\n${yellow}${ul}${plain}\n"
+        echo -e "\n${purple}【 UDP H3 | 端口: ${UDP_PORT}${HOP_RANGE:+ | 跳跃: ${HOP_RANGE}} | 证书: ${CERT_MODE:-acme} 】${plain}\n${yellow}${ul}${plain}\n"
         echo -e "${yellow}   SNI=${sni_host} · mode=stream-one · 无 Vision${insecure_q:+ · allowInsecure}${plain}"
         maybe_qr "$ul"
     fi
