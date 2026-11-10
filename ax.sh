@@ -2,7 +2,7 @@
 export LANG=en_US.UTF-8
 set -uo pipefail
 red='\033[0;31m'; green='\033[0;32m'; yellow='\033[0;33m'; cyan='\033[0;36m'; blue='\033[0;94m'; purple='\033[1;35m'; plain='\033[0m'
-ax_VERSION="1.1.8"
+ax_VERSION="1.1.9"
 SCRIPT_URL="https://raw.githubusercontent.com/pwenxiang51-wq/aegis-x/main/ax.sh"
 WORK_DIR="/etc/aegis-x"
 BIN_XRAY="/usr/local/bin/aegis-xray"
@@ -195,14 +195,47 @@ start_sub_server() {
     local port="$1" token="$2"
     mkdir -p "$SUB_DIR"
     ln -sfd "$SUB_FILE" "${SUB_DIR}/${token}"
+    local use_https=0
+    [[ -s "$CERT_FILE" && -s "$KEY_FILE" ]] && use_https=1
+    cat > "${WORK_DIR}/sub_server.py" << 'PY'
+import os, sys
+from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
+class H(SimpleHTTPRequestHandler):
+    def log_message(self, fmt, *args):
+        pass
+def main():
+    port = int(sys.argv[1])
+    directory = sys.argv[2]
+    cert = sys.argv[3] if len(sys.argv) > 3 else ""
+    key = sys.argv[4] if len(sys.argv) > 4 else ""
+    os.chdir(directory)
+    httpd = ThreadingHTTPServer(("0.0.0.0", port), H)
+    if cert and key and os.path.isfile(cert) and os.path.isfile(key):
+        import ssl
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        ctx.load_cert_chain(certfile=cert, keyfile=key)
+        httpd.socket = ctx.wrap_socket(httpd.socket, server_side=True)
+    httpd.serve_forever()
+if __name__ == "__main__":
+    main()
+PY
+    local exec_line py
+    py=$(command -v python3)
+    if [[ "$use_https" -eq 1 ]]; then
+        exec_line="${py} ${WORK_DIR}/sub_server.py ${port} ${SUB_DIR} ${CERT_FILE} ${KEY_FILE}"
+        echo -e "${green}✅ 订阅服务 HTTPS（复用节点证书）${plain}"
+    else
+        exec_line="${py} ${WORK_DIR}/sub_server.py ${port} ${SUB_DIR}"
+        echo -e "${yellow}⚠️ 无证书，订阅服务 HTTP${plain}"
+    fi
     cat > /etc/systemd/system/aegis-sub.service <<EOF
 [Unit]
-Description=Aegis-X Subscription HTTP
+Description=Aegis-X Subscription Server
 After=network.target
 [Service]
 Type=simple
 WorkingDirectory=${SUB_DIR}
-ExecStart=$(command -v python3) -m http.server ${port} --bind 0.0.0.0
+ExecStart=${exec_line}
 Restart=on-failure
 RestartSec=2
 NoNewPrivileges=true
@@ -238,7 +271,7 @@ refresh_sub_file() {
         hop_q=""; [[ -n "${HOP_RANGE:-}" ]] && hop_q="&mport=${HOP_RANGE}"
         sni_host="${UDP_SNI:-aegis-x.local}"
         insecure_q=""; [[ "${ALLOW_INSECURE:-1}" == "1" ]] && insecure_q="&allowInsecure=1"
-        echo "vless://${UUID}@${ip}:${UDP_PORT}?encryption=${ENC_KEY}&security=tls&sni=${sni_host}&fp=chrome&alpn=h3&type=xhttp&path=${pe}&mode=stream-one${insecure_q}${hop_q}#vless-xhttp-udp" >> "$SUB_FILE"
+        echo "vless://${UUID}@${ip}:${UDP_PORT}?encryption=${ENC_KEY}&security=tls&sni=${sni_host}&fp=chrome&alpn=h3&type=xhttp&path=${pe}&mode=stream-one&fm=1${insecure_q}${hop_q}#vless-xhttp-udp" >> "$SUB_FILE"
     fi
     if systemctl is-active --quiet aegis-argo-fixed && [[ -n "${ARGO_FIXED_DOMAIN:-}" ]]; then
         fa="${CF_ADDR_FIXED:-www.visa.com.hk}"
@@ -476,8 +509,13 @@ ARGO_FIXED_DOMAIN="${f_dom}"
 CF_ADDR_FIXED="${f_addr}"
 SUB_PORT="${sub_port}"
 SUB_TOKEN="${sub_token}"
+SUB_HTTPS="0"
 EOF
     chmod 600 "$META_FILE"
+    if [[ -s "$CERT_FILE" && -s "$KEY_FILE" ]]; then
+        start_sub_server "$sub_port" "$sub_token"
+        sed -i 's|^SUB_HTTPS=.*|SUB_HTTPS="1"|' "$META_FILE" 2>/dev/null || echo 'SUB_HTTPS="1"' >> "$META_FILE"
+    fi
     refresh_sub_file
 
     echo -e "${green}✅ 部署完成！${plain}"
@@ -599,9 +637,9 @@ print_links() {
         hop_q=""; [[ -n "${HOP_RANGE:-}" ]] && hop_q="&mport=${HOP_RANGE}"
         sni_host="${UDP_SNI:-aegis-x.local}"
         insecure_q=""; [[ "${ALLOW_INSECURE:-1}" == "1" ]] && insecure_q="&allowInsecure=1"
-        ul="vless://${UUID}@${ip}:${UDP_PORT}?encryption=${ENC_KEY}&security=tls&sni=${sni_host}&fp=chrome&alpn=h3&type=xhttp&path=${pe}&mode=stream-one${insecure_q}${hop_q}#vless-xhttp-udp"
+        ul="vless://${UUID}@${ip}:${UDP_PORT}?encryption=${ENC_KEY}&security=tls&sni=${sni_host}&fp=chrome&alpn=h3&type=xhttp&path=${pe}&mode=stream-one&fm=1${insecure_q}${hop_q}#vless-xhttp-udp"
         echo -e "\n${purple}【 UDP H3 | 端口: ${UDP_PORT}${HOP_RANGE:+ | 跳跃: ${HOP_RANGE}} | 证书: ${CERT_MODE:-acme} 】${plain}\n${yellow}${ul}${plain}\n"
-        echo -e "${yellow}   SNI=${sni_host} · mode=stream-one · 无 Vision${insecure_q:+ · allowInsecure}${plain}"
+        echo -e "${yellow}   SNI=${sni_host} · mode=stream-one · fm=1 · 无 Vision${insecure_q:+ · allowInsecure}${plain}"
         maybe_qr "$ul"
     fi
 
@@ -614,9 +652,18 @@ print_links() {
 
     echo -e "\n${cyan}----------------------------------------------------------------------${plain}"
     if [[ -n "${SUB_PORT:-}" && -n "${SUB_TOKEN:-}" ]]; then
+        local scheme="http" sub_host="$ip"
+        [[ "${SUB_HTTPS:-0}" == "1" ]] && scheme="https"
+        if [[ "$scheme" == "https" && -n "${UDP_SNI:-}" && "${UDP_SNI}" != "aegis-x.local" ]]; then
+            sub_host="$UDP_SNI"
+        fi
         echo -e "${green}>>> 订阅链接（添加后只需「更新订阅」）：${plain}"
-        echo -e "${blue}http://${ip}:${SUB_PORT}/${SUB_TOKEN}${plain}"
-        echo -e "${yellow}    内容为每行一条 vless:// ；要 Base64 用下方备用串${plain}"
+        echo -e "${blue}${scheme}://${sub_host}:${SUB_PORT}/${SUB_TOKEN}${plain}"
+        if [[ "$scheme" == "https" ]]; then
+            echo -e "${yellow}    HTTPS 订阅（域名 ${sub_host}）；内容每行一条 vless://${plain}"
+        else
+            echo -e "${yellow}    HTTP 订阅；内容每行一条 vless:// ；Base64 见下方${plain}"
+        fi
     fi
     echo -e "\n${yellow}>>> 备用：聚合 Base64：${plain}"
     if [[ -s "$SUB_FILE" ]]; then
@@ -740,7 +787,7 @@ while true; do
     echo -e "${cyan}======================================================================${plain}"
     echo -e "        🚀 Aegis-X (ax) 终极控制枢纽 V${ax_VERSION} 🚀        "
     echo -e "${cyan}======================================================================${plain}"
-    echo -e "   👨‍💻 作者GitHub项目 : ${blue}github.com/pwenxiang51-wq${plain}"
+    echo -e "   👨‍💻 作者GitHub项目 : ${blue}github.com/pwenxiang51-wq/aegis-x${plain}"
     echo -e "   📝 作者Velo.x博客 : ${blue}222382.xyz${plain}"
     echo -e "   ✈️ 作者Telegram   : ${blue}@Velox95${plain}"
     echo -e "   ⚡ 脚本状态: ${update_tip:-${yellow}检测中...${plain}}"
