@@ -1,6 +1,6 @@
 # 🛡️ Aegis-X (`ax`)
 
-极简高阶 `VLESS-XHTTP` 单节点部署工具 | 原生 `ML-KEM-768 (0-RTT)` 抗量子加密 + Cloudflare Zero Trust 固定隧道穿透。
+极简高阶 `VLESS-XHTTP` 单节点部署工具 | 原生 `ML-KEM-768` 抗量子加密 + `XHTTP/3` + Cloudflare Tunnels。
 
 ## 🚀 一键安装
 
@@ -12,9 +12,11 @@ bash <(curl -fsSL https://raw.githubusercontent.com/pwenxiang51-wq/aegis-x/main/
 
 ## ⚡ 核心架构
 
-* **直连模式 (`#vless-xhttp`)**：`VLESS` + `XHTTP (auto)` + `XTLS-Vision` + `ML-KEM-768 (0-RTT)`
-* **穿透模式 (`#vless-xhttp-argo`)**：`VLESS` + `XHTTP (packet-up)` + `Cloudflare Zero Trust (HTTP/2)`
-* **支持客户端**：`v2rayN` (Xray 26.x+)、`Shadowrocket`、`v2rayNG`
+* **直连 TCP**：`VLESS` + `XHTTP` + `XTLS-Vision` + `ML-KEM-768`
+* **直连 UDP/H3**：`VLESS` + `XHTTP/3 (QUIC)` + `ML-KEM-768` + 端口跳跃，证书只能用 Let's Encrypt 真证书（sslip.io + LE 或自有域名 + LE；自签不通，已拿掉）
+* **固定隧道**：`VLESS` + `XHTTP (packet-up)` + `Cloudflare Tunnels (HTTP/2)`
+* **订阅**：菜单 `3` 一键提取节点与聚合订阅链接
+* **卸载**：菜单 `9` 彻底清除（含 acme.sh 与续签 cron）
 
 ## 🔗 链接
 
