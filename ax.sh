@@ -2,7 +2,7 @@
 export LANG=en_US.UTF-8
 set -uo pipefail
 red='\033[0;31m'; green='\033[0;32m'; yellow='\033[0;33m'; cyan='\033[0;36m'; blue='\033[0;94m'; purple='\033[1;35m'; plain='\033[0m'
-ax_VERSION="1.1.7"
+ax_VERSION="1.1.8"
 SCRIPT_URL="https://raw.githubusercontent.com/pwenxiang51-wq/aegis-x/main/ax.sh"
 WORK_DIR="/etc/aegis-x"
 BIN_XRAY="/usr/local/bin/aegis-xray"
@@ -529,7 +529,7 @@ setup_argo() {
                 read -rp "👉 请输入绑定的完整域名 (如 xhttp.domain.com): " rd
                 local dm; dm=$(clean_host "$rd")
                 [[ -z "$dm" || "$dm" != *.* ]] && { echo -e "${red}❌ 域名无效！${plain}"; sleep 1.5; continue; }
-                echo "ARGO_TOKEN=${tk}" > "$WORK_DIR/argo.env" && chmod 600 "$WORK_DIR/argo.env"
+                echo "TUNNEL_TOKEN=${tk}" > "$WORK_DIR/argo.env" && chmod 600 "$WORK_DIR/argo.env"
                 cat > /etc/systemd/system/aegis-argo-fixed.service <<EOF
 [Unit]
 Description=Aegis-X Argo Fixed Tunnel
@@ -537,7 +537,7 @@ After=network.target
 [Service]
 Type=simple
 EnvironmentFile=${WORK_DIR}/argo.env
-ExecStart=${BIN_ARGO} tunnel --no-autoupdate --edge-ip-version auto --protocol http2 run --token \${ARGO_TOKEN}
+ExecStart=${BIN_ARGO} tunnel --no-autoupdate --edge-ip-version auto --protocol http2 run
 Restart=on-failure
 RestartSec=3
 [Install]
@@ -689,6 +689,9 @@ nuke_all() {
     systemctl daemon-reload
     pkill -9 -f "$BIN_XRAY" 2>/dev/null || true
     pkill -9 -f "$BIN_ARGO" 2>/dev/null || true
+    # 清 acme.sh（证书、账号、续签 cron），否则卸载后它还在
+    [[ -x "$HOME/.acme.sh/acme.sh" ]] && "$HOME/.acme.sh/acme.sh" --uninstall-cronjob >/dev/null 2>&1 || true
+    rm -rf "$HOME/.acme.sh"
     rm -rf "$WORK_DIR" "$BIN_XRAY" "$BIN_ARGO" "$SHORTCUT" /tmp/ax_*
     echo -e "${green}✅ ax 已彻底无痕卸载！${plain}"; exit 0
 }
