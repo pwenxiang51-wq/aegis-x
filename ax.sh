@@ -3,7 +3,7 @@ export LANG=en_US.UTF-8
 set -uo pipefail
 red='\033[0;31m'; green='\033[0;32m'; yellow='\033[0;33m'; cyan='\033[0;36m'; blue='\033[0;94m'; purple='\033[1;35m'; plain='\033[0m'
 ax_VERSION="1.1.10"
-SCRIPT_URL="https://raw.githubusercontent.com/pwenxiang51-wq/aegis-x/main/ax.sh"
+SCRIPT_URL="https://raw.githubusercontent.com/VeloxSpace/aegis-x/main/ax.sh"
 WORK_DIR="/etc/aegis-x"
 BIN_XRAY="/usr/local/bin/aegis-xray"
 BIN_ARGO="/usr/local/bin/aegis-argo"
@@ -787,7 +787,7 @@ while true; do
     echo -e "${cyan}======================================================================${plain}"
     echo -e "        🚀 Aegis-X (ax) 终极控制枢纽 V${ax_VERSION} 🚀        "
     echo -e "${cyan}======================================================================${plain}"
-    echo -e "   👨‍💻 作者GitHub项目 : ${blue}github.com/pwenxiang51-wq/aegis-x${plain}"
+    echo -e "   👨‍💻 作者GitHub项目 : ${blue}github.com/VeloxSpace/aegis-x${plain}"
     echo -e "   📝 作者Velo.x博客 : ${blue}222382.xyz${plain}"
     echo -e "   ✈️ 作者Telegram   : ${blue}@Velox95${plain}"
     echo -e "   ⚡ 脚本状态: ${update_tip:-${yellow}检测中...${plain}}"

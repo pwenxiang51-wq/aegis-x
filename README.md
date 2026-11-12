@@ -5,7 +5,7 @@
 ## 🚀 一键安装
 
 ~~~bash
-bash <(curl -fsSL https://raw.githubusercontent.com/pwenxiang51-wq/aegis-x/main/ax.sh)
+bash <(curl -fsSL https://raw.githubusercontent.com/VeloxSpace/aegis-x/main/ax.sh)
 ~~~
 
 > 快捷指令：安装后在终端输入 **`ax`** 即可呼出控制面板。
